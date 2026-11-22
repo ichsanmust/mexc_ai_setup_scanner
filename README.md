@@ -21,7 +21,7 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
   - Tracker menggunakan interval adaptif (`Min1` / `Min5` / `Min15`) dan live ticker `lastPrice` sehingga perubahan Entry, SL, dan TP pada posisi `LONG` maupun `SHORT` tetap akurat bahkan saat harga bergerak cepat antar siklus cek (min 15 detik).
 - **Audit Snapshot Setting per Scan Run (`scan_runs.settings_snapshot`):** Setiap eksekusi scan merekam snapshot lengkap strategi beserta `strategy_timeframes` (`HTF/LTF`, `kline_limit`, `expiry_hours` tiap strategi), filter ATR/volume, dan konfigurasi AI yang dipakai untuk diaudit di modal **Detail Evaluasi**.
 - **Dashboard, Menu Terpisah, & Chart TradingView Lightweight Charts (WIB):**
-  - Topbar dipisah menjadi **`Scanner`** (workspace default: Daftar Setup Trading, Riwayat Scan, Chart, & Detail Setup), **`Dashboard`** (ringkasan KPI termasuk keterangan `Active OPEN = OPEN + ENTRY_HIT` dan grafik performa per strategi), serta tautan terpisah **`Alur Scan ↗`** (`/flow`) di ujung kanan.
+  - Topbar dipisah menjadi **`Scanner`** (workspace default: Daftar Setup Trading, Riwayat Scan, Chart, & Detail Setup), **`Dashboard`** (ringkasan KPI termasuk keterangan `Active OPEN = OPEN + ENTRY_HIT + MANUAL_TAKEN` dan grafik performa per strategi), serta tautan terpisah **`Alur Scan ↗`** (`/flow`) di ujung kanan.
   - Chart Candlestick + histogram **Volume** + overlay **EMA 21/50/200** + panel **DSS Bressert (`10 9 5 80 20 60`)** tersinkronisasi, **drag bebas** vertikal/horizontal (`Auto Fit` untuk reset), **zona waktu `Asia/Jakarta` (WIB)** di seluruh chart & UI, serta **presisi harga otomatis hingga `10` desimal** untuk koin bernilai kecil (`0.00000xxx`).
   - Mendukung 3 mode visualisasi level: **`Mode Biasa`** (garis horizontal penuh), **`Kotak Setup`** (*view-only* kotak posisi Long/Short langsung dari Entry AI/Manual + SL + TP dengan *hover* R:R), dan **`Mode Gambar`** (gambar 1 kotak posisi kustom otomatis mengikuti arah setup, tombol `Dari Setup`, `Terapkan ke Taken`, dan hapus via tombol / `Delete`).
   - Setiap setup menyimpan riwayat awal **`CREATED`** (acuan awal Entry/SL/TP dari sistem AI), estimasi **lama trade**, serta referensi **`Scan Run #...`** (klik nomor Run ID di tabel, riwayat scan, atau detail untuk membuka popup detail & *settings snapshot*).
@@ -105,7 +105,7 @@ Setelah aplikasi berjalan pada port default `8001`:
 
 ### A. Navigasi Menu Utama
 - **`Scanner`** *(tampilan default)*: menampilkan **Daftar Setup Trading** (lengkap dengan estimasi **lama trade**, `HTF/LTF`, `Candles`, `Expiry`, dan tombol **`Run #...`** yang dapat diklik untuk membuka popup detail scan), **Riwayat Scan Terbaru**, **Chart Interaktif** (`Mode Biasa`, `Kotak Setup`, `Mode Gambar`), serta **Detail Setup** dengan referensi **`Scan Run #...` & *settings snapshot*** dan **Riwayat Kejadian & Status Setup** (dimulai dari event awal `CREATED`).
-- **`Dashboard`**: menampilkan kartu KPI (**Total Setups**, **Active OPEN** = gabungan setup berstatus `OPEN` + `ENTRY_HIT` yang masih aktif dipantau Tracker, **Win Rate**, **Avg R:R Ratio**) beserta grafik batang & ringkasan performa per strategi.
+- **`Dashboard`**: menampilkan kartu KPI (**Total Setups**, **Active OPEN** = gabungan setup berstatus `OPEN` + `ENTRY_HIT` + `MANUAL_TAKEN` yang masih aktif dipantau Tracker, **Win Rate**, **Avg R:R Ratio**) beserta grafik batang & ringkasan performa per strategi.
 - **`Alur Scan ↗`** *(terpisah di paling ujung kanan topbar)*: membuka halaman lain `/flow` untuk melihat alur scan dan audit prompt strategi.
 
 ### B. Pengaturan Aplikasi (`Settings & AI Models`)
@@ -146,7 +146,7 @@ Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomati
 | `HIT_TP` | `HIT_TP` | ❌ Final | **Win** | Otomatis dari Tracker: harga menyentuh `Take Profit` terlebih dahulu setelah `Entry` tersentuh. |
 | `HIT_SL` | `HIT_SL` | ❌ Final | **Loss** | Otomatis dari Tracker: harga menyentuh `Stop Loss` lebih dulu. |
 | `EXPIRED` | `EXPIRED` | ❌ Final | `Expired` | Otomatis dari Tracker: melewati `expires_at` sebelum mengenai `TP` maupun `SL`. |
-| `MANUAL_TAKEN` | `TAKEN` | ✅ Ya | `Taken` | Ditandai manual oleh user sudah dieksekusi di MEXC (bisa isi `manual_entry_price`); tetap dipantau Tracker sampai `TP`/`SL`/`EXPIRED`. |
+| `MANUAL_TAKEN` | `TAKEN` | ✅ Ya | `Active OPEN` & `Taken` | Ditandai manual oleh user sudah dieksekusi di MEXC (bisa isi `manual_entry_price`); tetap dipantau Tracker sampai `TP`/`SL`/`EXPIRED`. |
 | `MANUAL_SKIPPED` | `SKIPPED` | ❌ Final | `Skipped` | Ditandai manual (*Skip*) bahwa setup ini dilewati dan tidak dieksekusi. |
 | `CLOSED_MANUAL_TP` | `CLOSED_TP` | ❌ Final | **Win** | Ditutup manual oleh user sebagai profit (*Close TP*, dengan harga close tercatat). |
 | `CLOSED_MANUAL_CL` | `CLOSED_CL` | ❌ Final | **Loss** | Ditutup manual oleh user sebagai *Cut Loss* (*Close CL*, dengan harga close tercatat). |

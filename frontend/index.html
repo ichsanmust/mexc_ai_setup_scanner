@@ -54,10 +54,10 @@
             <strong id="kpi-total" class="kpi-value">0</strong>
             <small class="kpi-sub">Seluruh setup AI tersimpan</small>
           </div>
-          <div class="card kpi-card" title="Gabungan setup OPEN (menunggu entry/hasil) + ENTRY_HIT (sudah entry, sedang dipantau ke TP/SL)">
+          <div class="card kpi-card" title="Gabungan setup OPEN (menunggu entry/hasil) + ENTRY_HIT (sudah entry, berjalan ke TP/SL) + MANUAL_TAKEN (order diambil manual, tetap dipantau Tracker)">
             <span class="kpi-label">Active OPEN</span>
             <strong id="kpi-open" class="kpi-value text-accent">0</strong>
-            <small class="kpi-sub">Status <b>OPEN</b> + <b>ENTRY_HIT</b> aktif dipantau Tracker</small>
+            <small class="kpi-sub">Status <b>OPEN</b> + <b>ENTRY_HIT</b> + <b>MANUAL_TAKEN</b> aktif dipantau Tracker</small>
           </div>
           <div class="card kpi-card">
             <span class="kpi-label">Win Rate (TP vs SL)</span>
@@ -83,7 +83,7 @@
         </div>
       </section>
       <div class="dashboard-info-note">
-        <strong>Info Status OPEN pada Dashboard:</strong> Angka <b>Active OPEN</b> dan batang biru <b>OPEN</b> di grafik menghitung setup berstatus <code>OPEN</code> (baru hasil scan / menunggu harga menyentuh Entry atau TP/SL) ditambah <code>ENTRY_HIT</code> (harga sudah menyentuh Entry dan sedang berjalan menuju TP/SL) yang masih aktif dipantau Tracker. Setup yang sudah selesai (<code>HIT_TP</code>, <code>HIT_SL</code>, <code>EXPIRED</code>) maupun status manual (<code>MANUAL_TAKEN</code>, <code>MANUAL_SKIPPED</code>, <code>CLOSED_MANUAL_*</code>) tidak dihitung ke dalam <b>Active OPEN</b>.
+        <strong>Info Status OPEN pada Dashboard:</strong> Angka <b>Active OPEN</b> dan batang biru <b>OPEN</b> di grafik menghitung gabungan seluruh setup yang masih aktif dipantau otomatis oleh Tracker ke harga MEXC, yaitu <code>OPEN</code> (menunggu Entry atau hasil), <code>ENTRY_HIT</code> (sudah menyentuh Entry dan berjalan menuju TP/SL), serta <code>MANUAL_TAKEN</code> (order dieksekusi manual dan ikut dipantau ke TP/SL/Expired). Setup yang sudah selesai atau dilewati (<code>HIT_TP</code>, <code>HIT_SL</code>, <code>EXPIRED</code>, <code>MANUAL_SKIPPED</code>, <code>CLOSED_MANUAL_*</code>) tidak dihitung ke dalam <b>Active OPEN</b>.
       </div>
     </div>
 

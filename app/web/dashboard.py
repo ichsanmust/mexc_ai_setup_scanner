@@ -877,7 +877,7 @@ def get_strategy_analytics(db: Session = Depends(get_db)):
     all_rrs: list[float] = []
 
     for strat_name, group in buckets.items():
-        open_c = sum(1 for s in group if s.status in ("OPEN", "ENTRY_HIT"))
+        open_c = sum(1 for s in group if s.status in ("OPEN", "ENTRY_HIT", "MANUAL_TAKEN"))
         tp_c = sum(1 for s in group if s.status in ("HIT_TP", "CLOSED_MANUAL_TP"))
         sl_c = sum(1 for s in group if s.status in ("HIT_SL", "CLOSED_MANUAL_CL"))
         exp_c = sum(1 for s in group if s.status == "EXPIRED")

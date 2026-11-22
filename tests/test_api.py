@@ -171,6 +171,9 @@ def test_setups_listing_manual_status_and_analytics(api_client, db_session):
     assert patch_resp.json()["status"] == "MANUAL_TAKEN"
     assert patch_resp.json()["manual_entry_price"] == 90010.5
     assert patch_resp.json()["manual_notes"] == "Entered at 90010.5 on MEXC"
+    # MANUAL_TAKEN is actively tracked by Tracker, so it counts toward Active OPEN
+    taken_analytics = api_client.get("/api/analytics/strategies").json()
+    assert taken_analytics["open_count"] == 1
 
     # Closing manually without close price should return 400
     bad_close = api_client.patch(
