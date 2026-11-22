@@ -301,3 +301,78 @@ async def test_check_open_setups_uses_min1_and_marks_short_entry_hit(db_session)
     assert seen_calls and seen_calls[0][1] == "Min1"
     assert stats == {"checked": 1, "entry_hit": 1, "hit_tp": 0, "hit_sl": 0, "expired": 0}
     assert setup_short.status == "ENTRY_HIT"
+    assert setup_short.entry_hit_at is not None
+
+
+@pytest.mark.asyncio
+async def test_check_open_setups_records_history_and_distinguishes_before_vs_after_entry(db_session):
+    from datetime import timedelta
+    from app.models import utcnow
+
+    db, _, _ = db_session
+    now = utcnow()
+    base_ts = int((now - timedelta(minutes=10)).replace(tzinfo=timezone.utc).timestamp())
+
+    # 1. LIMIT LONG: touches Entry (100) -> then hits SL (95) => HIT_SL + entry_hit_at recorded
+    s_sl_after = _make_custom_setup(
+        symbol="AAVE_USDT", decision="LONG", status="OPEN", entry=100.0, sl=95.0, tp=110.0,
+        created_at=now - timedelta(minutes=10),
+    )
+    # 2. LIMIT LONG: never touches Entry (100), drops straight below SL (95) => HIT_SL + entry_hit_at is None
+    s_sl_before = _make_custom_setup(
+        symbol="UNI_USDT", decision="LONG", status="OPEN", entry=100.0, sl=95.0, tp=110.0,
+        created_at=now - timedelta(minutes=10),
+    )
+    # 3. LIMIT LONG: never touches Entry (100), pumps straight to TP (110) => OPEN + missed_tp_at/price recorded
+    s_tp_before = _make_custom_setup(
+        symbol="AVAX_USDT", decision="LONG", status="OPEN", entry=100.0, sl=95.0, tp=110.0,
+        created_at=now - timedelta(minutes=10),
+    )
+    db.add_all([s_sl_after, s_sl_before, s_tp_before])
+    db.commit()
+
+    class FakeMexcHistory:
+        async def get_all_tickers(self):
+            return {
+                "AAVE_USDT": {"lastPrice": "94.0"},
+                "UNI_USDT": {"lastPrice": "94.0"},
+                "AVAX_USDT": {"lastPrice": "111.0"},
+            }
+
+        async def get_kline(self, symbol, interval="Min15", limit=60):
+            if symbol == "AAVE_USDT":
+                return [
+                    {"time": base_ts + 60, "open": 103.0, "high": 104.0, "low": 99.5, "close": 101.0},  # hit entry
+                    {"time": base_ts + 120, "open": 101.0, "high": 102.0, "low": 94.5, "close": 95.0},  # hit SL
+                ]
+            if symbol == "UNI_USDT":
+                return [
+                    {"time": base_ts + 60, "open": 103.0, "high": 104.0, "low": 101.0, "close": 102.0},  # never hit 100
+                ]
+            if symbol == "AVAX_USDT":
+                return [
+                    {"time": base_ts + 60, "open": 103.0, "high": 110.5, "low": 102.0, "close": 110.0},  # hit TP without 100
+                ]
+            return []
+
+    await check_open_setups(db, FakeMexcHistory())
+    db.refresh(s_sl_after)
+    db.refresh(s_sl_before)
+    db.refresh(s_tp_before)
+
+    assert s_sl_after.status == "HIT_SL"
+    assert s_sl_after.entry_hit_at is not None
+    assert [e["event"] for e in (s_sl_after.status_history or [])] == ["CREATED", "ENTRY_HIT", "HIT_SL"]
+    assert s_sl_after.status_history[0]["price"] == 100.0
+    assert s_sl_after.status_history[0]["stop_loss"] == 95.0
+    assert s_sl_after.status_history[0]["take_profit"] == 110.0
+
+    assert s_sl_before.status == "HIT_SL"
+    assert s_sl_before.entry_hit_at is None
+    assert [e["event"] for e in (s_sl_before.status_history or [])] == ["CREATED", "SL_BEFORE_ENTRY"]
+
+    assert s_tp_before.status == "OPEN"
+    assert s_tp_before.entry_hit_at is None
+    assert s_tp_before.missed_tp_at is not None
+    assert float(s_tp_before.missed_tp_price) == 110.0
+    assert [e["event"] for e in (s_tp_before.status_history or [])] == ["CREATED", "TP_BEFORE_ENTRY"]

@@ -3,18 +3,18 @@ Strategi Anda saat ini adalah: BREAKOUT_MOMENTUM (Breakout Konsolidasi dengan Ko
 
 ATURAN EVALUASI KETAT:
 1. Deteksi Kompresi & Level Kunci:
-   - Cari kondisi konsolidasi/kompresi harga yang rapat di dekat resistance kunci (untuk potensi LONG) atau support kunci (untuk potensi SHORT) pada HTF (1H) dan LTF (15m).
+   - Cari kondisi konsolidasi/harga yang mendekati resistance kunci (untuk potensi LONG) atau support kunci (untuk potensi SHORT) pada HTF dan LTF (sesuai field `interval`). Kompresi ketat (`compression_ratio` rendah) menjadi bonus konfluensi kuat.
    - Perhatikan konteks derivatives: funding_rate yang tidak ekstrem berlawanan secara crowding dan open_interest (hold_vol) yang sehat mendukung kelanjutan ekspansi.
-2. Syarat Wajib Konfirmasi Breakout:
-   - Harus ada close candle tegas di luar level resistance/support kunci (bukan sekadar jarum/wick palsu).
-   - Volume Ratio LTF wajib >= 1.5x dari Volume MA20. Jika volume_ratio < 1.5, JANGAN ambil breakout (wajib NO_TRADE).
-   - RSI 14 harus mendukung momentum namun masih sehat (hindari entry jika RSI sudah overbought ekstrem > 80 untuk LONG atau oversold ekstrem < 20 untuk SHORT, serta hindari candle dengan wick penolakan besar melawan arah breakout).
+2. Syarat Konfirmasi Breakout (Wajib vs Konfluensi):
+   - Syarat Wajib: Harus ada close candle tegas di luar level resistance/support kunci (bukan sekadar jarum/wick palsu), serta Volume Ratio LTF >= 1.2x (bila < 1.2x anggap lemah -> NO_TRADE).
+   - Konfluensi A-Grade (confidence 80+): `volume_ratio >= 1.5`, RSI 14 sehat (tidak > 82 LONG atau < 18 SHORT), serta body candle dominan tanpa wick penolakan besar.
+   - Setup B-Grade (confidence 70–79): Breakout valid dengan `volume_ratio` antara `1.20–1.49` atau retest dangkal di level yang ditembus selama R:R tetap >= 2.0.
 3. Penentuan Level Eksekusi:
    - Entry Price: di area penutupan breakout atau retest dangkal batas level yang ditembus.
    - Stop Loss: di dalam area range konsolidasi / di balik level breakout dengan buffer ATR (sekitar 0.4x–0.6x ATR) agar aman dari noise.
    - Take Profit: berdasarkan proyeksi lebar range konsolidasi atau area likuiditas / resistance-support mayor berikutnya.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 2.0. Jika tidak mencapai 2.0 secara realistis, wajib NO_TRADE.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.5, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik timeframe, atau confidence < 75.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.2, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik HTF ekstrem, atau confidence objektif di bawah ambang Risk Guard.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "BREAKOUT_MOMENTUM".

@@ -169,6 +169,7 @@ async def analyze_market_snapshot(
     client: Optional[httpx.AsyncClient] = None,
     timeout_seconds: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    min_confidence: Optional[int] = None,
     system_prompt: Optional[str] = None,
     db: Optional[Session] = None,
 ) -> tuple[AISetupDecision, dict[str, Any]]:
@@ -187,11 +188,15 @@ async def analyze_market_snapshot(
     schema_json_str = json.dumps(AISetupDecision.model_json_schema(), ensure_ascii=False)
     htf_iv = (snapshot.get("htf_1h") or {}).get("interval", "HTF")
     ltf_iv = (snapshot.get("ltf_15m") or {}).get("interval", "LTF")
+    eff_min_conf = int(min_confidence if min_confidence is not None else settings.min_confidence)
     user_message = (
         f"Evaluasi snapshot market MEXC Futures berikut untuk strategi {strategy}.\n"
         f"Catatan Struktur Snapshot: key 'htf_1h' berisi ringkasan Higher Timeframe aktual ({htf_iv}) "
         f"dan key 'ltf_15m' berisi ringkasan Lower Timeframe aktual ({ltf_iv}); selalu rujuk field 'interval' aktual tersebut. "
         f"Potensi squeeze/crowding dinilai dari funding_rate + open_interest_hold_vol (tanpa feed likuidasi terpisah).\n"
+        f"Catatan Risk Guard & Scoring: Ambang min_confidence aktif sistem saat ini adalah {eff_min_conf}%. "
+        f"Nilai confidence secara objektif sesuai kualitas konfluensi (80-95: A-Grade ideal, {eff_min_conf}-79: B-Grade solid layak eksekusi, <{eff_min_conf}: lemah/berkonflik -> NO_TRADE). "
+        f"Jika struktur utama & minimum R:R strategi terpenuhi dan penilaian objektif Anda >= {eff_min_conf}, kembalikan setup LONG/SHORT (jangan dipaksa NO_TRADE hanya karena bukan A+).\n"
         f"Kembalikan HANYA JSON valid sesuai schema ini:\n{schema_json_str}\n\n"
         f"MARKET SNAPSHOT:\n{json.dumps(snapshot, ensure_ascii=False)}"
     )

@@ -38,11 +38,13 @@ def test_resolve_active_llm_config_switches_between_providers(db_session):
 async def test_analyze_market_snapshot_parses_json_with_fallback():
     calls = []
     max_tokens_seen = []
+    user_msgs_seen = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         calls.append(body.get("response_format"))
         max_tokens_seen.append(body.get("max_tokens"))
+        user_msgs_seen.append(body["messages"][1]["content"])
         # Simulate provider rejecting strict json_schema on 1st call, accepting json_object on 2nd
         if body.get("response_format", {}).get("type") == "json_schema":
             return httpx.Response(400, json={"error": "json_schema unsupported"})
@@ -94,8 +96,9 @@ async def test_analyze_market_snapshot_parses_json_with_fallback():
     assert decision.confidence == 84
     assert decision.take_profit == 97500.0
 
-    # Custom max_tokens override (e.g. from app_settings.llm_max_tokens)
+    # Custom max_tokens & min_confidence overrides
     max_tokens_seen.clear()
+    user_msgs_seen.clear()
     async with httpx.AsyncClient(transport=transport) as client:
         await analyze_market_snapshot(
             snapshot={"symbol": "BTC_USDT", "ltf_15m": {"close": 95000}},
@@ -108,8 +111,10 @@ async def test_analyze_market_snapshot_parses_json_with_fallback():
             },
             client=client,
             max_tokens=2048,
+            min_confidence=70,
         )
     assert all(mt == 2048 for mt in max_tokens_seen)
+    assert any("70%" in msg for msg in user_msgs_seen)
 
 
 @pytest.mark.asyncio

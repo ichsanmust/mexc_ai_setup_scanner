@@ -111,6 +111,32 @@ Setelah aplikasi berjalan pada port default `8001`:
 - Gunakan **Mark Taken**, **Skip**, atau **Edit Status / Close** (untuk ubah status, isi `manual_entry_price`, atau tutup manual `CLOSED_MANUAL_TP` / `CLOSED_MANUAL_CL`).
 - Klik ikon **`i`** di sebelah *Daftar Setup Trading* untuk melihat keterangan seluruh status, dan klik **Detail Evaluasi** di *Riwayat Scan* untuk melihat settingan snapshot scan serta hasil evaluasi setiap pair.
 
+### Cara Kerja Outcome Tracker & Daftar 9 Status Setup
+Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomatis setiap `tracker_interval_seconds` (default `60` detik, minimum `15` detik; tetap berjalan walau mode Auto Scan diset ke Manual), dan bisa dijalankan kapan saja lewat tombol **Check Outcomes** (`POST /api/tracker/run`).
+
+- **Mekanisme Pengecekan Otomatis:** Tracker mengevaluasi seluruh setup berstatus `OPEN`, `ENTRY_HIT`, dan `MANUAL_TAKEN` menggunakan candle historis adaptif (`Min1` / `Min5` / `Min15`) sejak waktu dibuat (atau sejak `manual_action_at` untuk `MANUAL_TAKEN`) plus harga ticker live (`lastPrice`):
+  - Order `LIMIT` menunggu harga menyentuh `entry_price` (`low <= entry` untuk `LONG`, `high >= entry` untuk `SHORT`) → berubah menjadi `ENTRY_HIT` bila belum menyentuh `TP`/`SL`. Order `MARKET` otomatis dianggap tersentuh sejak awal.
+  - Jika `SL` dan `TP` tersentuh dalam 1 candle yang sama, **`HIT_SL` diprioritaskan**.
+  - Jika melewati `expires_at` (diatur per strategi lewat `suggested_expiry_hours`) tanpa menyentuh `TP`/`SL` → berubah menjadi `EXPIRED`.
+
+| Status | Tab di UI | Dipantau Tracker? | Pengaruh di Analytics | Keterangan |
+|---|---|---|---|---|
+| `OPEN` | `OPEN` | ✅ Ya | `Active OPEN` | Setup valid baru yang menunggu harga menyentuh `Entry`, `TP`, `SL`, atau `EXPIRED`. |
+| `ENTRY_HIT` | `ENTRY_HIT` | ✅ Ya | `Active OPEN` | Otomatis dari Tracker: harga sudah menyentuh level `Entry` dan sedang berjalan menuju `TP`/`SL`. |
+| `HIT_TP` | `HIT_TP` | ❌ Final | **Win** | Otomatis dari Tracker: harga menyentuh `Take Profit` terlebih dahulu setelah `Entry` tersentuh. |
+| `HIT_SL` | `HIT_SL` | ❌ Final | **Loss** | Otomatis dari Tracker: harga menyentuh `Stop Loss` lebih dulu. |
+| `EXPIRED` | `EXPIRED` | ❌ Final | `Expired` | Otomatis dari Tracker: melewati `expires_at` sebelum mengenai `TP` maupun `SL`. |
+| `MANUAL_TAKEN` | `TAKEN` | ✅ Ya | `Taken` | Ditandai manual oleh user sudah dieksekusi di MEXC (bisa isi `manual_entry_price`); tetap dipantau Tracker sampai `TP`/`SL`/`EXPIRED`. |
+| `MANUAL_SKIPPED` | `SKIPPED` | ❌ Final | `Skipped` | Ditandai manual (*Skip*) bahwa setup ini dilewati dan tidak dieksekusi. |
+| `CLOSED_MANUAL_TP` | `CLOSED_TP` | ❌ Final | **Win** | Ditutup manual oleh user sebagai profit (*Close TP*, dengan harga close tercatat). |
+| `CLOSED_MANUAL_CL` | `CLOSED_CL` | ❌ Final | **Loss** | Ditutup manual oleh user sebagai *Cut Loss* (*Close CL*, dengan harga close tercatat). |
+
+- **Badge Riwayat & Penelitian Eksekusi AI (Tampil Otomatis Bersandingan dengan Status Utama):**
+  - **`ENTRY`** *(hijau-biru)*: harga sempat menyentuh level `Entry` (`entry_hit_at`) sebelum menyentuh `TP`/`SL`.
+  - **`NO ENTRY`** *(peringatan kuning)*: muncul di samping `HIT_SL` jika harga langsung menjebol `SL` sebelum sempat menjemput Limit Entry.
+  - **`TP NO ENTRY`** *(hijau putus-putus)*: harga sudah menembus `TP` duluan (`missed_tp_at`, `missed_tp_price`) sebelum menyentuh Limit Entry — menandakan analisa arah AI benar, hanya level limit terlalu dalam.
+  - **`TAKEN`** *(ungu)*: setup sempat ditandai `MANUAL_TAKEN` oleh user (bisa juga dipakai pada setup yang sudah `HIT_SL` atau `EXPIRED` dengan mengisi **Harga Entry Aktual**, **SL Baru**, & **TP Baru** di modal Edit Status untuk dipantau ulang oleh Tracker).
+
 ---
 
 ## 5. Daftar Strategi Bawaan & Isi Prompt Aturannya
@@ -124,22 +150,23 @@ Anda adalah analis kuantitatif Crypto Futures profesional yang sangat disiplin p
 Strategi Anda saat ini adalah: TREND_PULLBACK (Intraday Trend Following & Pullback ke EMA / Flip Zone).
 
 ATURAN EVALUASI KETAT:
-1. Evaluasi tren Higher Timeframe (HTF 1H / Min60) terlebih dahulu:
-   - Tentukan bias tren dari posisi harga terhadap EMA 50 dan EMA 200, keselarasan EMA 21 > EMA 50 > EMA 200 (uptrend) atau EMA 21 < EMA 50 < EMA 200 (downtrend), serta struktur swing (Higher High/Higher Low atau Lower High/Lower Low).
-   - Jika HTF sideways/choppy atau EMA 50 & EMA 200 datar saling silang tanpa struktur jelas, wajib pilih NO_TRADE.
-2. Cari pullback sehat di Lower Timeframe (LTF 15m / Min15):
+1. Evaluasi tren Higher Timeframe (HTF sesuai field `interval` di `htf_1h`) terlebih dahulu:
+   - Tentukan bias tren dari `ema_bias` (`BULLISH_ALIGNED` / `BEARISH_ALIGNED` / `MIXED`), posisi harga terhadap EMA 50 & EMA 200, serta struktur swing (`recent_swing_high` / `recent_swing_low`).
+   - Kondisi `BULLISH_ALIGNED` / `BEARISH_ALIGNED` bernilai konfluensi tinggi (A-Grade). Kondisi `MIXED` tetap bisa dipertimbangkan (B-Grade) selama harga tegas di atas EMA 50/200 (LONG) atau di bawah EMA 50/200 (SHORT). Hanya wajib `NO_TRADE` bila HTF sangat choppy (`FLAT_RANGING` datar berimpit tanpa arah jelas).
+2. Cari pullback sehat di Lower Timeframe (LTF sesuai field `interval` di `ltf_15m`):
    - Tunggu harga melakukan pullback terkendali ke area EMA 21 / EMA 50 LTF atau area support/resistance flip zone yang searah dengan tren HTF.
-   - Konfirmasi tanda kelanjutan tren dari candlestick (rejection wick searah tren, body candle solid) dan RSI 14 sehat (tidak entry saat RSI sudah ekstrem jenuh searah tren; jangan FOMO mengejar harga yang sudah jauh dari EMA 21).
+   - Konfluensi tambahan (menaikkan confidence ke 80+): candle rejection/rebound searah tren di `recent_candles`, DSS Bressert (`dss` memotong/naik dari area jenuh), dan RSI 14 sehat (tidak overextended jauh dari EMA 21).
 3. Penentuan Level Eksekusi (LONG atau SHORT):
    - Entry Price: harga limit di area pullback/flip zone atau market jika konfirmasi candle baru saja selesai di zona pullback.
    - Stop Loss: letakkan di balik recent swing low (untuk LONG) atau recent swing high (untuk SHORT) ditambah buffer ATR 14 LTF sekitar 0.3x hingga 0.5x ATR.
    - Take Profit: targetkan tepat sebelum resistance mayor berikutnya (untuk LONG) atau sebelum support mayor berikutnya (untuk SHORT).
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 1.8. Jika struktur level tidak memberi ruang R:R >= 1.8, wajib NO_TRADE.
-4. Disiplin NO_TRADE:
+4. Disiplin NO_TRADE & Skala Confidence Objektif:
+   - Gunakan skala objektif: `80–95` (A-Grade: HTF aligned kuat + pullback tepat + rejection/volume/DSS mendukung), `70–79` (B-Grade: tren & pullback + R:R valid namun 1 faktor tambahan kurang sempurna), `< 70` (lemah/konflik -> wajib `NO_TRADE`).
    - Kembalikan decision="NO_TRADE", entry_type="NONE", serta entry_price=null, stop_loss=null, take_profit=null, risk_reward_ratio=null jika:
-     * Terjadi konflik antara tren HTF dan struktur LTF.
-     * Harga sudah terlalu jauh extended dari EMA 21 (risiko chase/FOMO).
-     * Confidence Anda di bawah 75.
+     * Terjadi konflik langsung antara arah tren HTF dan struktur LTF.
+     * Harga sudah terlalu jauh extended dari EMA 21 sehingga R:R < 1.8.
+     * Struktur terlalu choppy / confidence objektif Anda di bawah ambang Risk Guard.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "TREND_PULLBACK".
 ```
@@ -152,19 +179,19 @@ Strategi Anda saat ini adalah: BREAKOUT_MOMENTUM (Breakout Konsolidasi dengan Ko
 
 ATURAN EVALUASI KETAT:
 1. Deteksi Kompresi & Level Kunci:
-   - Cari kondisi konsolidasi/kompresi harga yang rapat di dekat resistance kunci (untuk potensi LONG) atau support kunci (untuk potensi SHORT) pada HTF (1H) dan LTF (15m).
+   - Cari kondisi konsolidasi/harga yang mendekati resistance kunci (untuk potensi LONG) atau support kunci (untuk potensi SHORT) pada HTF dan LTF (sesuai field `interval`). Kompresi ketat (`compression_ratio` rendah) menjadi bonus konfluensi kuat.
    - Perhatikan konteks derivatives: funding_rate yang tidak ekstrem berlawanan secara crowding dan open_interest (hold_vol) yang sehat mendukung kelanjutan ekspansi.
-2. Syarat Wajib Konfirmasi Breakout:
-   - Harus ada close candle tegas di luar level resistance/support kunci (bukan sekadar jarum/wick palsu).
-   - Volume Ratio LTF wajib >= 1.5x dari Volume MA20. Jika volume_ratio < 1.5, JANGAN ambil breakout (wajib NO_TRADE).
-   - RSI 14 harus mendukung momentum namun masih sehat (hindari entry jika RSI sudah overbought ekstrem > 80 untuk LONG atau oversold ekstrem < 20 untuk SHORT, serta hindari candle dengan wick penolakan besar melawan arah breakout).
+2. Syarat Konfirmasi Breakout (Wajib vs Konfluensi):
+   - Syarat Wajib: Harus ada close candle tegas di luar level resistance/support kunci (bukan sekadar jarum/wick palsu), serta Volume Ratio LTF >= 1.2x (bila < 1.2x anggap lemah -> NO_TRADE).
+   - Konfluensi A-Grade (confidence 80+): `volume_ratio >= 1.5`, RSI 14 sehat (tidak > 82 LONG atau < 18 SHORT), serta body candle dominan tanpa wick penolakan besar.
+   - Setup B-Grade (confidence 70–79): Breakout valid dengan `volume_ratio` antara `1.20–1.49` atau retest dangkal di level yang ditembus selama R:R tetap >= 2.0.
 3. Penentuan Level Eksekusi:
    - Entry Price: di area penutupan breakout atau retest dangkal batas level yang ditembus.
    - Stop Loss: di dalam area range konsolidasi / di balik level breakout dengan buffer ATR (sekitar 0.4x–0.6x ATR) agar aman dari noise.
    - Take Profit: berdasarkan proyeksi lebar range konsolidasi atau area likuiditas / resistance-support mayor berikutnya.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 2.0. Jika tidak mencapai 2.0 secara realistis, wajib NO_TRADE.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.5, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik timeframe, atau confidence < 75.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.2, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik HTF ekstrem, atau confidence objektif di bawah ambang Risk Guard.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "BREAKOUT_MOMENTUM".
 ```
@@ -176,19 +203,19 @@ Anda adalah analis kuantitatif Crypto Futures profesional yang berfokus pada per
 Strategi Anda saat ini adalah: MEAN_REVERSION_SCALP (Pantulan Support/Resistance saat Kondisi Ranging).
 
 ATURAN EVALUASI KETAT:
-1. Syarat Wajib Kondisi Pasar (RANGING Only):
-   - Strategi ini HANYA boleh aktif jika market_regime adalah "RANGING" (HTF & LTF tidak sedang trending kuat searah, EMA 21/50 relatif datar/berdekatan dan harga memantul di antara batas range yang jelas).
-   - Jika pasar sedang TRENDING_UP, TRENDING_DOWN, atau HIGH_VOLATILITY_CHOP ekstrem, wajib pilih NO_TRADE.
+1. Syarat Kondisi Pasar (Range / Non-Trending Kuat):
+   - Strategi ini optimal saat `market_regime` adalah `"RANGING"` (`FLAT_RANGING` atau `MIXED` dengan range jelas dan harga memantul di antara batas S/R).
+   - Jika pasar sedang trending searah sangat kuat atau `HIGH_VOLATILITY_CHOP` liar tanpa batas range jelas, wajib pilih NO_TRADE.
 2. Syarat Sinyal Pantulan:
-   - LONG: Harga berada di dekat nearest_support / lower range dengan tanda pelemahan tekanan jual (rejection wick bawah, candle berbalik positif) DAN RSI 14 LTF berada di area oversold (< 30) atau baru berbalik naik dari bawah 30.
-   - SHORT: Harga berada di dekat nearest_resistance / upper range dengan tanda pelemahan tekanan beli (rejection wick atas, candle berbalik negatif) DAN RSI 14 LTF berada di area overbought (> 70) atau baru berbalik turun dari atas 70.
+   - LONG: Harga berada di dekat `nearest_support` / lower range dengan tanda perlambatan jual (rejection wick bawah, candle berbalik bullish) DAN RSI 14 / DSS LTF mulai jenuh jual (ekstrem `< 30` bernilai A-Grade 80+; atau `30–38` yang mulai berbalik naik `rsi14 > prev_rsi14` untuk B-Grade 70–79).
+   - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas, candle berbalik bearish) DAN RSI 14 / DSS LTF mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
 3. Penentuan Level Eksekusi:
    - Entry Price: di area pantulan support/resistance saat ini.
    - Stop Loss: letakkan ketat di luar batas range (sekitar 0.5x–0.8x ATR 14 LTF di luar swing support/resistance).
    - Take Profit: target konservatif ke area mid-range (EMA 21/50) atau sisi range yang berlawanan.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 1.5.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market bukan RANGING, RSI belum masuk area ekstrem yang terkonfirmasi berbalik, terdapat ancaman breakdown/breakout bervolume besar, atau confidence < 75.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market sedang trending kuat melawan arah, belum ada tanda pantulan/pembalikan RSI maupun wick di batas S/R, terdapat breakdown/breakout bervolume besar (`volume_ratio >= 1.8`), atau confidence objektif di bawah ambang Risk Guard.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "MEAN_REVERSION_SCALP".
 ```
@@ -223,8 +250,8 @@ ATURAN WAJIB UNTUK ISI "prompt_text":
 1. Hanya gunakan data indikator yang benar-benar ada di MARKET SNAPSHOT sistem saya:
    - market_ticker: last_price, fair_price, index_price, change_24h_pct, quote_volume_24h, funding_rate, open_interest_hold_vol, high_24h, low_24h. *(Catatan: tidak ada feed likuidasi terpisah; gunakan funding_rate + open_interest_hold_vol sebagai proksi squeeze/crowding).*
    - htf_1h (container Higher Timeframe sesuai field "interval") & ltf_15m (container Lower Timeframe sesuai field "interval"): interval, bars_count, close, ema21, ema50, ema200, ema_bias (BULLISH_ALIGNED / BEARISH_ALIGNED / FLAT_RANGING / MIXED), dist_to_ema21_pct, dist_to_ema50_pct, dist_to_ema200_pct, rsi14, prev_rsi14, dss, prev_dss, dss_signal, atr14, atr_pct, vol_ma20, current_volume, volume_ratio, compression_ratio, recent_swing_high, recent_swing_low, nearest_support, nearest_resistance, dist_to_support_pct, dist_to_resistance_pct, recent_candles (open, high, low, close, volume, is_bullish, direction, body_pct, upper_wick_pct, lower_wick_pct).
-2. Buat aturan evaluasi bernomor yang ketat: kondisi tren HTF, syarat pemicu di LTF, aturan penentuan Entry, Stop Loss (menggunakan struktur swing + buffer ATR), Take Profit (resistance/support atau proyeksi range), dan syarat minimum R:R sesuai field "min_rr".
-3. Sertakan aturan disiplin NO_TRADE jika struktur lemah, HTF/LTF konflik, R:R kurang dari minimum, atau confidence < 75.
+2. Buat aturan evaluasi bernomor yang jelas: pisahkan syarat WAJIB (struktur tren HTF, pemicu utama LTF, level Entry/SL berbasis swing + buffer ATR, TP ke S/R berikutnya, dan minimum R:R sesuai field "min_rr") dari faktor konfluensi BONUS yang menentukan skor confidence (80-95 untuk A-Grade ideal, 70-79 untuk B-Grade solid layak eksekusi).
+3. Sertakan aturan disiplin NO_TRADE jika struktur utama lemah, HTF/LTF berkonflik langsung, R:R kurang dari minimum, atau confidence objektif di bawah ambang Risk Guard sistem (jangan mem-hardcode angka batas confidence di atas Risk Guard agar tidak bentrok dengan setting user).
 4. Akhiri "prompt_text" dengan instruksi wajib:
    - Output WAJIB berupa JSON valid tanpa teks tambahan di luar JSON.
    - market_regime harus salah satu dari: "TRENDING_UP", "TRENDING_DOWN", "RANGING", "HIGH_VOLATILITY_CHOP".

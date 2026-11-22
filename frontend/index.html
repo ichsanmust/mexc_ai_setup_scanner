@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261122k" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -122,6 +122,10 @@
             <div class="legend-item"><span class="badge badge-neutral">MANUAL_SKIPPED</span><span>Tab <b>SKIPPED</b>: Anda menandai manual (<i>Skip</i>) bahwa setup ini tidak diambil.</span></div>
             <div class="legend-item"><span class="badge badge-hit-tp">CLOSED_MANUAL_TP</span><span>Tab <b>CLOSED_TP</b>: Anda menutup posisi secara manual dengan Take Profit (harga TP dicatat).</span></div>
             <div class="legend-item"><span class="badge badge-hit-sl">CLOSED_MANUAL_CL</span><span>Tab <b>CLOSED_CL</b>: Anda menutup posisi secara manual dengan Cut Loss (harga CL dicatat).</span></div>
+            <div class="legend-item"><span class="badge badge-entry-hit">ENTRY</span><span>Badge riwayat: harga benar sempat menyentuh <b>Entry</b> sebelum kena TP/SL.</span></div>
+            <div class="legend-item"><span class="badge badge-expired">NO ENTRY</span><span>Badge riwayat: harga langsung jebol <b>SL</b> sebelum sempat menyentuh Limit Entry.</span></div>
+            <div class="legend-item"><span class="badge badge-missed-tp">TP NO ENTRY</span><span>Badge riwayat: harga sudah tembus <b>TP</b> duluan tanpa menyentuh Limit Entry (analisa arah benar).</span></div>
+            <div class="legend-item"><span class="badge badge-manual">TAKEN</span><span>Badge riwayat: setup sempat Anda tandai diambil manual (<b>MANUAL_TAKEN</b>).</span></div>
           </div>
         </div>
 
@@ -198,24 +202,31 @@
             <span id="chart-subtitle" class="subtitle-sm">Candlestick MEXC Futures + Entry / SL / TP Levels</span>
           </div>
           <div class="chart-controls">
+            <div class="chart-mode-switch" role="group" aria-label="Mode Chart">
+              <button type="button" class="btn-chip active" data-draw-mode="normal" title="Mode Biasa: garis horizontal Entry / SL / TP penuh, drag bebas chart">Mode Biasa</button>
+              <button type="button" id="btn-mode-setup" class="btn-chip" data-draw-mode="setup" title="Kotak Setup (View): tampilkan kotak posisi Long/Short langsung dari Entry AI/Manual, SL &amp; TP (menggantikan garis penuh)">Kotak Setup</button>
+              <button type="button" id="btn-mode-draw" class="btn-chip" data-draw-mode="draw" title="Mode Gambar: klik area chart untuk menggambar kotak posisi baru (otomatis LONG/SHORT)">Mode Gambar</button>
+            </div>
+            <button class="btn-chip" data-interval="Min1">1m</button>
             <button class="btn-chip" data-interval="Min5">5m</button>
             <button class="btn-chip active" data-interval="Min15">15m</button>
             <button class="btn-chip" data-interval="Min60">1H</button>
             <button class="btn-chip" data-interval="Hour4">4H</button>
             <button class="btn-chip" data-interval="Day1">1D</button>
-            <label class="ema-toggle">
+            <button type="button" id="btn-reset-chart-view" class="btn-chip" title="Pas-kan ulang chart & skala harga lalu buka kembali mode drag bebas atas/bawah">&#8634; Auto Fit</button>
+            <label class="ema-toggle" id="wrap-toggle-ema">
               <input type="checkbox" id="toggle-ema" />
               <span>EMA 21/50/200</span>
             </label>
-            <label class="ema-toggle">
+            <label class="ema-toggle" id="wrap-toggle-volume">
               <input type="checkbox" id="toggle-volume" checked />
               <span>Volume</span>
             </label>
-            <label class="ema-toggle">
+            <label class="ema-toggle" id="wrap-toggle-dss">
               <input type="checkbox" id="toggle-dss" checked />
               <span>DSS Bressert</span>
             </label>
-            <label class="ema-toggle" for="live-chart-interval">
+            <label class="ema-toggle" id="wrap-live-chart" for="live-chart-interval">
               <span>Live:</span>
               <select id="live-chart-interval" class="live-select">
                 <option value="0">Off</option>
@@ -231,7 +242,18 @@
           </div>
         </div>
 
-        <div id="candlestick-chart" class="chart-box"></div>
+        <div id="candlestick-stage" class="chart-stage">
+          <div id="candlestick-chart" class="chart-box"></div>
+          <div id="position-overlay" class="position-overlay"></div>
+        </div>
+        <div id="position-tool-bar" class="position-tool-bar hidden">
+          <div id="pos-bar-summary">Klik di area chart untuk meletakkan posisi, atau muat dari setup.</div>
+          <div class="position-tool-actions">
+            <button type="button" id="btn-pos-from-setup" class="btn btn-secondary btn-sm">&#8634; Dari Setup</button>
+            <button type="button" id="btn-pos-apply" class="btn btn-green btn-sm hidden">Terapkan ke Taken</button>
+            <button type="button" id="btn-pos-clear" class="btn btn-danger btn-sm hidden" title="Hapus kotak posisi aktif (atau tekan tombol Delete / Backspace di keyboard)">&times; Hapus (Del)</button>
+          </div>
+        </div>
         <div id="dss-chart-wrap" class="dss-chart-wrap">
           <div class="dss-legend">
             <span>DSS Bressert</span>
@@ -279,6 +301,8 @@
             <span>Close Price: <strong id="d-resolved-price">-</strong></span>
           </div>
 
+          <div id="d-scan-run-box" class="scan-ref-box hidden"></div>
+
           <div class="rationale-box">
             <h4>AI Rationale</h4>
             <p id="d-rationale">-</p>
@@ -287,6 +311,11 @@
           </div>
 
           <div class="snapshot-grid" id="d-indicators"></div>
+
+          <div class="history-box">
+            <h4>Riwayat Kejadian &amp; Status Setup</h4>
+            <div id="d-history-list" class="history-timeline"></div>
+          </div>
 
           <div class="manual-actions">
             <input id="manual-entry-input" type="text" placeholder="Harga entry aktual (opsional)..." style="max-width: 210px;" />
@@ -771,6 +800,16 @@
           <label for="edit-manual-entry">Harga Entry Aktual (Opsional)</label>
           <input id="edit-manual-entry" type="text" placeholder="mis. 1667.36" />
         </div>
+        <div id="edit-risk-levels-wrap" class="field-grid-2">
+          <div>
+            <label for="edit-stop-loss">Stop Loss (Opsional / SL Baru)</label>
+            <input id="edit-stop-loss" type="text" placeholder="mis. 92.5" />
+          </div>
+          <div>
+            <label for="edit-take-profit">Take Profit (Opsional / TP Baru)</label>
+            <input id="edit-take-profit" type="text" placeholder="mis. 108.0" />
+          </div>
+        </div>
         <div id="edit-close-price-wrap" class="hidden">
           <label id="edit-close-price-label" for="edit-close-price">Harga Close (TP / CL)</label>
           <input id="edit-close-price" type="text" placeholder="Masukkan harga close..." />
@@ -788,6 +827,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261122k"></script>
 </body>
 </html>

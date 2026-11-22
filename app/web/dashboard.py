@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..ai.analyzer import resolve_active_llm_config, test_llm_connection
 from ..config import (
@@ -27,7 +27,7 @@ from ..config import (
 )
 from ..core.pipeline import scan_pipeline
 from ..core.runtime_settings import resolve_runtime_settings
-from ..core.tracker import check_open_setups
+from ..core.tracker import check_open_setups, ensure_created_history
 from ..database import Base, SessionLocal, engine, get_db
 from ..models import AIModel, AppSetting, ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
 from ..scanner.features import compute_indicators_df
@@ -112,7 +112,60 @@ def _build_ai_settings_out(db: Session) -> AISettingsOut:
     )
 
 
-def _setup_to_out(row: TradeSetup, live_price: float | None = None) -> SetupOut:
+def _build_strategy_map(db: Session) -> dict[str, Strategy]:
+    """Return active/inactive strategies keyed by uppercase name for metadata enrichment."""
+    return {r.name.strip().upper(): r for r in db.query(Strategy).all()}
+
+
+def _setup_to_out(
+    row: TradeSetup,
+    live_price: float | None = None,
+    strategy_map: dict[str, Strategy] | None = None,
+    db: Session | None = None,
+) -> SetupOut:
+    strat_key = (row.strategy_used or "").strip().upper()
+    strat_row = strategy_map.get(strat_key) if strategy_map is not None else None
+    if strat_row is None and db is not None and strat_key:
+        strat_row = db.query(Strategy).filter(Strategy.name == strat_key).first()
+
+    scan_run = row.scan_run
+    scan_cfg = (
+        scan_run.settings_snapshot
+        if (scan_run is not None and isinstance(scan_run.settings_snapshot, dict))
+        else None
+    )
+    tf_map = scan_cfg.get("strategy_timeframes") if isinstance(scan_cfg, dict) else None
+    run_strat_prof = None
+    if isinstance(tf_map, dict):
+        run_strat_prof = tf_map.get(row.strategy_used) or tf_map.get(strat_key)
+        if run_strat_prof is None:
+            for k, v in tf_map.items():
+                if str(k).strip().upper() == strat_key and isinstance(v, dict):
+                    run_strat_prof = v
+                    break
+
+    holding_period = strat_row.holding_period if strat_row and strat_row.holding_period else None
+    strategy_profile = {
+        "htf": (
+            (run_strat_prof.get("htf") if isinstance(run_strat_prof, dict) else None)
+            or (strat_row.suggested_htf if strat_row else None)
+        ),
+        "ltf": (
+            (run_strat_prof.get("ltf") if isinstance(run_strat_prof, dict) else None)
+            or (strat_row.suggested_ltf if strat_row else None)
+        ),
+        "kline_limit": (
+            (run_strat_prof.get("kline_limit") if isinstance(run_strat_prof, dict) else None)
+            or (strat_row.suggested_kline_limit if strat_row else None)
+        ),
+        "expiry_hours": (
+            (run_strat_prof.get("expiry_hours") if isinstance(run_strat_prof, dict) else None)
+            or (strat_row.suggested_expiry_hours if strat_row else None)
+        ),
+        "holding_period": holding_period,
+        "trade_style": strat_row.trade_style if strat_row else None,
+    }
+
     return SetupOut(
         id=row.id,
         scan_run_id=row.scan_run_id,
@@ -131,17 +184,25 @@ def _setup_to_out(row: TradeSetup, live_price: float | None = None) -> SetupOut:
         invalidation_reason=row.invalidation_reason,
         rationale=row.rationale,
         status=row.status,
+        entry_hit_at=row.entry_hit_at,
+        missed_tp_at=row.missed_tp_at,
+        missed_tp_price=float(row.missed_tp_price) if row.missed_tp_price is not None else None,
         manual_action_at=row.manual_action_at,
         manual_entry_price=float(row.manual_entry_price) if row.manual_entry_price is not None else None,
         manual_notes=row.manual_notes,
         resolved_price=float(row.resolved_price) if row.resolved_price is not None else None,
         resolved_at=row.resolved_at,
+        status_history=row.status_history or [],
         expires_at=row.expires_at,
         features_snapshot=row.features_snapshot,
         ai_payload=row.ai_payload,
         created_at=row.created_at,
         updated_at=row.updated_at,
         live_price=live_price,
+        holding_period=holding_period,
+        strategy_profile=strategy_profile,
+        scan_run_started_at=scan_run.started_at if scan_run is not None else None,
+        scan_run_settings=scan_cfg,
     )
 
 
@@ -215,6 +276,14 @@ def _ensure_schema_columns() -> None:
         cols = {c["name"]: c for c in inspector.get_columns("trade_setups")}
         idxs = {idx["name"] for idx in inspector.get_indexes("trade_setups")}
         with engine.begin() as conn:
+            if "entry_hit_at" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN entry_hit_at DATETIME NULL"))
+            if "missed_tp_at" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN missed_tp_at DATETIME NULL"))
+            if "missed_tp_price" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN missed_tp_price DECIMAL(20, 8) NULL"))
+            if "status_history" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN status_history JSON NULL"))
             if "manual_entry_price" not in cols:
                 conn.execute(text("ALTER TABLE trade_setups ADD COLUMN manual_entry_price DECIMAL(20, 8) NULL"))
             if engine.dialect.name == "mysql":
@@ -507,10 +576,11 @@ def get_scan_run_evaluations(run_id: int, db: Session = Depends(get_db)):
         .order_by(TradeSetup.id.asc())
         .all()
     )
+    strat_map = _build_strategy_map(db)
     return ScanRunEvaluationsResponse(
         run=ScanRunOut.model_validate(run),
         evaluations=[ScanEvaluationOut.model_validate(e) for e in evals],
-        setups=[_setup_to_out(s) for s in setups],
+        setups=[_setup_to_out(s, strategy_map=strat_map) for s in setups],
     )
 
 
@@ -543,7 +613,7 @@ async def list_setups(
     decision: Optional[str] = Query(default=None),
     symbol: Optional[str] = Query(default=None),
     date_filter: Optional[str] = Query(default=None, alias="date"),
-    tz_offset_minutes: int = Query(default=0, alias="tz_offset"),
+    tz_offset_minutes: int = Query(default=-420, alias="tz_offset"),
     include_live_price: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -572,7 +642,13 @@ async def list_setups(
         query = query.filter(TradeSetup.created_at >= utc_start, TradeSetup.created_at < utc_end)
 
     total = query.count()
-    rows = query.order_by(desc(TradeSetup.created_at), desc(TradeSetup.id)).offset(offset).limit(limit).all()
+    rows = (
+        query.options(joinedload(TradeSetup.scan_run))
+        .order_by(desc(TradeSetup.created_at), desc(TradeSetup.id))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     ticker_map: dict[str, float] = {}
     if include_live_price and rows:
@@ -585,17 +661,18 @@ async def list_setups(
         except Exception as exc:
             log.warning("Could not attach live prices: %s", exc)
 
-    items = [_setup_to_out(r, live_price=ticker_map.get(r.symbol)) for r in rows]
+    strat_map = _build_strategy_map(db)
+    items = [_setup_to_out(r, live_price=ticker_map.get(r.symbol), strategy_map=strat_map) for r in rows]
     return SetupListResponse(items=items, total=total)
 
 
 @app.get("/api/setups/{setup_id}", response_model=SetupOut)
 def get_setup_detail(setup_id: int, db: Session = Depends(get_db)):
     """Get full detail of a single setup."""
-    row = db.query(TradeSetup).filter(TradeSetup.id == setup_id).first()
+    row = db.query(TradeSetup).options(joinedload(TradeSetup.scan_run)).filter(TradeSetup.id == setup_id).first()
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Setup tidak ditemukan")
-    return _setup_to_out(row)
+    return _setup_to_out(row, db=db)
 
 
 @app.patch("/api/setups/{setup_id}/status", response_model=SetupOut)
@@ -604,7 +681,7 @@ def update_setup_manual_status(
     body: SetupStatusUpdate,
     db: Session = Depends(get_db),
 ):
-    """Update setup status manually (including manual entry and manual TP/CL close prices)."""
+    """Update setup status manually (including custom actual entry, SL, TP, and close prices)."""
     row = db.query(TradeSetup).filter(TradeSetup.id == setup_id).first()
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Setup tidak ditemukan")
@@ -615,36 +692,111 @@ def update_setup_manual_status(
             detail="Harga close (TP / CL) wajib diisi saat menutup posisi secara manual.",
         )
 
+    eff_entry = float(
+        body.manual_entry_price
+        if body.manual_entry_price is not None
+        else (row.manual_entry_price if row.manual_entry_price is not None else row.entry_price)
+    )
+    eff_sl = float(body.stop_loss if body.stop_loss is not None else row.stop_loss)
+    eff_tp = float(body.take_profit if body.take_profit is not None else row.take_profit)
+
+    if body.stop_loss is not None or body.take_profit is not None:
+        if row.decision == "LONG" and not (eff_sl < eff_entry < eff_tp):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Geometri LONG tidak valid: wajib SL ({eff_sl}) < Entry ({eff_entry}) < TP ({eff_tp}).",
+            )
+        if row.decision == "SHORT" and not (eff_tp < eff_entry < eff_sl):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Geometri SHORT tidak valid: wajib TP ({eff_tp}) < Entry ({eff_entry}) < SL ({eff_sl}).",
+            )
+        risk = abs(eff_entry - eff_sl)
+        if risk > 0:
+            row.risk_reward_ratio = Decimal(f"{round(abs(eff_tp - eff_entry) / risk, 4):.4f}")
+        if body.stop_loss is not None:
+            row.stop_loss = Decimal(f"{eff_sl:.8f}")
+        if body.take_profit is not None:
+            row.take_profit = Decimal(f"{eff_tp:.8f}")
+    elif body.manual_entry_price is not None:
+        valid_geo = (
+            (row.decision == "LONG" and eff_sl < eff_entry < eff_tp)
+            or (row.decision == "SHORT" and eff_tp < eff_entry < eff_sl)
+        )
+        if valid_geo and abs(eff_entry - eff_sl) > 0:
+            row.risk_reward_ratio = Decimal(f"{round(abs(eff_tp - eff_entry) / abs(eff_entry - eff_sl), 4):.4f}")
+
+    now = utcnow()
     row.status = body.status
+    note_clean = body.manual_notes.strip() if body.manual_notes is not None else (row.manual_notes or "")
+
+    def _append_hist(event: str, price: float | None, desc: str) -> None:
+        hist = ensure_created_history(row)
+        hist.append(
+            {
+                "at": now.isoformat(),
+                "event": event,
+                "status": body.status,
+                "price": round(float(price), 8) if price is not None else None,
+                "stop_loss": float(row.stop_loss),
+                "take_profit": float(row.take_profit),
+                "note": f"{desc} | {note_clean}".strip(" |") if note_clean else desc,
+            }
+        )
+        row.status_history = hist
+
     if body.status == "OPEN":
         row.manual_action_at = None
         row.manual_entry_price = None
         row.resolved_price = None
         row.resolved_at = None
+        row.entry_hit_at = None
+        row.missed_tp_at = None
+        row.missed_tp_price = None
+        if row.expires_at and row.expires_at <= now:
+            row.expires_at = now + timedelta(hours=12)
+        _append_hist("RESET_OPEN", float(row.entry_price), "Reset manual ke OPEN untuk pantau ulang")
+    elif body.status == "ENTRY_HIT":
+        row.entry_hit_at = row.entry_hit_at or now
+        row.resolved_price = None
+        row.resolved_at = None
+        if row.expires_at and row.expires_at <= now:
+            row.expires_at = now + timedelta(hours=12)
+        _append_hist("MANUAL_ENTRY_HIT", float(row.entry_price), "Ditandai ENTRY_HIT manual")
     elif body.status == "MANUAL_TAKEN":
-        row.manual_action_at = row.manual_action_at or utcnow()
+        row.manual_action_at = now
         row.resolved_price = None
         row.resolved_at = None
         if body.manual_entry_price is not None:
             row.manual_entry_price = Decimal(f"{body.manual_entry_price:.8f}")
+        if row.expires_at and row.expires_at <= now:
+            row.expires_at = now + timedelta(hours=12)
+        _append_hist(
+            "MANUAL_TAKEN",
+            eff_entry,
+            f"Eksekusi manual (Entry {eff_entry}, SL {float(row.stop_loss)}, TP {float(row.take_profit)})",
+        )
     elif body.status == "MANUAL_SKIPPED":
-        row.manual_action_at = utcnow()
+        row.manual_action_at = now
         row.resolved_price = None
         row.resolved_at = None
+        _append_hist("MANUAL_SKIPPED", None, "Setup dilewati manual (SKIP)")
     elif body.status in ("CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL"):
-        row.manual_action_at = row.manual_action_at or utcnow()
+        row.manual_action_at = row.manual_action_at or now
         if body.manual_entry_price is not None:
             row.manual_entry_price = Decimal(f"{body.manual_entry_price:.8f}")
         row.resolved_price = Decimal(f"{body.resolved_price:.8f}")
-        row.resolved_at = utcnow()
+        row.resolved_at = now
+        _append_hist(body.status, body.resolved_price, f"Tutup posisi manual ({body.status})")
     elif body.status == "EXPIRED":
-        row.resolved_at = row.resolved_at or utcnow()
+        row.resolved_at = row.resolved_at or now
+        _append_hist("EXPIRED", float(row.resolved_price) if row.resolved_price is not None else None, "Ditandai EXPIRED")
 
     if body.manual_notes is not None:
         row.manual_notes = body.manual_notes.strip()
     db.commit()
     db.refresh(row)
-    return _setup_to_out(row)
+    return _setup_to_out(row, db=db)
 
 
 # --- Chart & Strategy Analytics Endpoints ---
@@ -1110,7 +1262,7 @@ def serve_dashboard():
     """Serve local HTML/JS trading dashboard."""
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(str(index_file))
+        return FileResponse(str(index_file), headers={"Cache-Control": "no-store"})
     return {"status": "online", "app": "mexc-ai-setup-scanner", "docs_url": "/docs"}
 
 

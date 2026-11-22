@@ -80,6 +80,13 @@ def test_setups_listing_manual_status_and_analytics(api_client, db_session):
         ai_analyzed_count=2,
         setups_created_count=1,
         status="COMPLETED",
+        settings_snapshot={
+            "scan_mode": "MANUAL",
+            "top_n_pairs": 15,
+            "strategy_timeframes": {
+                "TREND_PULLBACK": {"htf": "Min60", "ltf": "Min15", "kline_limit": 250, "expiry_hours": 12}
+            },
+        },
         started_at=now,
         finished_at=now,
     )
@@ -146,6 +153,10 @@ def test_setups_listing_manual_status_and_analytics(api_client, db_session):
     assert list_resp.status_code == 200
     items = list_resp.json()["items"]
     assert len(items) == 1
+    assert items[0]["holding_period"] == "4 - 24 Jam (Intraday)"
+    assert items[0]["strategy_profile"]["htf"] == "Min60"
+    assert items[0]["scan_run_started_at"] is not None
+    assert items[0]["scan_run_settings"]["top_n_pairs"] == 15
     btc_id = items[0]["id"]
 
     patch_resp = api_client.patch(
@@ -448,4 +459,61 @@ def test_strategies_db_crud_toggle_and_settings_sync(api_client, db_session):
     builtin = next(r for r in rows if r["name"] == "TREND_PULLBACK")
     assert api_client.delete(f"/api/strategies/{builtin['id']}").status_code == 400
     assert api_client.delete(f"/api/strategies/{created['id']}").status_code == 200
+
+
+def test_manual_reentry_overrides_sl_tp_on_hit_sl_setup(api_client, db_session):
+    db, _, _ = db_session
+    now = utcnow()
+    sl_setup = TradeSetup(
+        symbol="SUI_USDT",
+        strategy_used="TREND_PULLBACK",
+        decision="LONG",
+        market_regime="TRENDING_UP",
+        entry_type="LIMIT",
+        entry_price=Decimal("3.20"),
+        stop_loss=Decimal("3.00"),
+        take_profit=Decimal("3.60"),
+        risk_reward_ratio=Decimal("2.0"),
+        confidence=82,
+        invalidation_reason="Break 3.00",
+        rationale="Pullback test",
+        status="HIT_SL",
+        resolved_price=Decimal("3.00"),
+        resolved_at=now - timedelta(minutes=10),
+        expires_at=now - timedelta(minutes=1),
+        features_snapshot={},
+        ai_payload={},
+    )
+    db.add(sl_setup)
+    db.commit()
+    db.refresh(sl_setup)
+
+    # Invalid geometry (SL >= Entry for LONG) should return HTTP 400
+    bad_geo = api_client.patch(
+        f"/api/setups/{sl_setup.id}/status",
+        json={"status": "MANUAL_TAKEN", "manual_entry_price": 2.98, "stop_loss": 3.05, "take_profit": 3.40},
+    )
+    assert bad_geo.status_code == 400
+
+    # Valid manual re-entry at SL level with new SL=2.85 and new TP=3.50 -> resets resolved & recomputes R:R
+    ok_resp = api_client.patch(
+        f"/api/setups/{sl_setup.id}/status",
+        json={
+            "status": "MANUAL_TAKEN",
+            "manual_entry_price": 3.00,
+            "stop_loss": 2.85,
+            "take_profit": 3.45,
+            "manual_notes": "Re-entry manual di SL sebelumnya dengan SL & TP baru",
+        },
+    )
+    assert ok_resp.status_code == 200
+    body = ok_resp.json()
+    assert body["status"] == "MANUAL_TAKEN"
+    assert body["manual_entry_price"] == 3.00
+    assert body["stop_loss"] == 2.85
+    assert body["take_profit"] == 3.45
+    assert body["resolved_price"] is None
+    assert body["resolved_at"] is None
+    assert body["risk_reward_ratio"] == 3.0
+    assert body["status_history"][-1]["event"] == "MANUAL_TAKEN"
 

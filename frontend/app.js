@@ -1,4 +1,82 @@
 const API_BASE = "";
+const JAKARTA_TZ = "Asia/Jakarta";
+
+function parseBackendUtcDate(val) {
+  if (!val) return null;
+  if (val instanceof Date) return Number.isNaN(val.getTime()) ? null : val;
+  if (typeof val === "number") {
+    const d = new Date(val);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const raw = String(val).trim();
+  if (!raw) return null;
+  const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const d = new Date(hasTz ? raw : `${raw}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatJakartaDateTime(val, withSeconds = false) {
+  const d = parseBackendUtcDate(val);
+  if (!d) return "-";
+  const opts = {
+    timeZone: JAKARTA_TZ,
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  };
+  if (withSeconds) opts.second = "2-digit";
+  return `${d.toLocaleString("id-ID", opts).replace(/\./g, ":")} WIB`;
+}
+
+function formatJakartaTime(val = new Date(), withSeconds = true) {
+  const d = parseBackendUtcDate(val);
+  if (!d) return "-";
+  const opts = {
+    timeZone: JAKARTA_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  };
+  if (withSeconds) opts.second = "2-digit";
+  return `${d.toLocaleTimeString("en-GB", opts)} WIB`;
+}
+
+function formatChartJakartaTime(time) {
+  if (typeof time !== "number" || !Number.isFinite(time)) return String(time || "");
+  return formatJakartaDateTime(time * 1000, false);
+}
+
+function formatChartJakartaTickMark(time, tickMarkType) {
+  if (typeof time !== "number" || !Number.isFinite(time)) return String(time || "");
+  const d = new Date(time * 1000);
+  if (tickMarkType === 0) {
+    return d.toLocaleString("en-GB", { timeZone: JAKARTA_TZ, year: "numeric" });
+  }
+  if (tickMarkType === 1) {
+    return d.toLocaleString("id-ID", { timeZone: JAKARTA_TZ, month: "short", year: "2-digit" });
+  }
+  if (tickMarkType === 2) {
+    return d.toLocaleString("id-ID", { timeZone: JAKARTA_TZ, day: "2-digit", month: "short" });
+  }
+  if (tickMarkType === 4) {
+    return d.toLocaleTimeString("en-GB", {
+      timeZone: JAKARTA_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+  }
+  return d.toLocaleTimeString("en-GB", {
+    timeZone: JAKARTA_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
 
 async function apiRequest(endpoint, options = {}) {
   const headers = { ...options.headers };
@@ -36,6 +114,16 @@ const state = {
   statusFilter: "ALL",
   selectedSetup: null,
   chartInterval: "Min15",
+  drawMode: "normal",
+  drawnPositions: [],
+  setupBox: null,
+  activePositionId: null,
+  nextPositionSeq: 1,
+  chartBarsCount: 300,
+  chartCandles: [],
+  overlayRafPending: false,
+  lastVolumeToggle: null,
+  lastCandleTime: null,
   setups: [],
   setupsPage: 1,
   setupsPageSize: 20,
@@ -96,7 +184,12 @@ function fmtPrice(val) {
   return num.toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 
-function statusBadge(st, manualActionAt = null) {
+function statusBadge(setupOrStatus, manualActionAt = null) {
+  const s =
+    setupOrStatus && typeof setupOrStatus === "object"
+      ? setupOrStatus
+      : { status: setupOrStatus, manual_action_at: manualActionAt };
+  const st = s.status;
   const map = {
     OPEN: { cls: "badge-open", tip: "Setup aktif dipantau otomatis oleh Tracker ke harga live MEXC" },
     ENTRY_HIT: { cls: "badge-entry-hit", tip: "Otomatis dari Tracker: harga pasar sudah menyentuh Entry, sedang menuju TP/SL" },
@@ -109,11 +202,24 @@ function statusBadge(st, manualActionAt = null) {
     CLOSED_MANUAL_CL: { cls: "badge-hit-sl", tip: "Posisi ditutup manual dengan Cut Loss" },
   };
   const info = map[st] || { cls: "badge-neutral", tip: st };
-  const takenTag =
-    manualActionAt && (st === "HIT_TP" || st === "HIT_SL" || st === "EXPIRED")
-      ? ' <span class="badge badge-manual" title="Setup ini sempat ditandai Taken oleh Anda">TAKEN</span>'
-      : "";
-  return `<span class="badge ${info.cls}" title="${info.tip}">${st}</span>${takenTag}`;
+  const tags = [`<span class="badge ${info.cls}" title="${info.tip}">${st}</span>`];
+
+  if (s.entry_hit_at && st !== "OPEN" && st !== "ENTRY_HIT") {
+    const entryAtStr = formatJakartaDateTime(s.entry_hit_at);
+    tags.push(`<span class="badge badge-entry-hit" title="Sempat menyentuh Entry pada ${escapeHtml(entryAtStr)}">ENTRY</span>`);
+  }
+  if (!s.entry_hit_at && !s.manual_action_at && st === "HIT_SL") {
+    tags.push(`<span class="badge badge-expired" title="Harga jebol SL sebelum menyentuh Limit Entry">NO ENTRY</span>`);
+  }
+  if (s.missed_tp_at && !s.entry_hit_at) {
+    const tpPx = s.missed_tp_price ? fmtPrice(s.missed_tp_price) : "-";
+    const tpAtStr = formatJakartaDateTime(s.missed_tp_at);
+    tags.push(`<span class="badge badge-missed-tp" title="Harga menembus TP (${tpPx}) pada ${escapeHtml(tpAtStr)} tanpa menyentuh Limit Entry">TP NO ENTRY</span>`);
+  }
+  if (s.manual_action_at && (st === "HIT_TP" || st === "HIT_SL" || st === "EXPIRED" || st === "CLOSED_MANUAL_TP" || st === "CLOSED_MANUAL_CL")) {
+    tags.push(`<span class="badge badge-manual" title="Setup ini sempat ditandai Taken manual">TAKEN</span>`);
+  }
+  return `<div style="display:flex; flex-wrap:wrap; gap:4px;">${tags.join("")}</div>`;
 }
 
 async function loadHealthAndStatus() {
@@ -251,7 +357,7 @@ function renderScanRunsList(runs) {
           : r.status === "FAILED"
             ? "badge-hit-sl"
             : "badge-open";
-      const timeStr = r.started_at ? new Date(r.started_at + "Z").toLocaleString() : "-";
+      const timeStr = r.started_at ? formatJakartaDateTime(r.started_at) : "-";
       const hasErr = Boolean(r.error_message);
       const errBadge = hasErr
         ? `<span class="badge ${r.status === "FAILED" ? "badge-hit-sl" : "badge-expired"}">Ada Info Error</span>`
@@ -263,7 +369,7 @@ function renderScanRunsList(runs) {
       return `
         <div class="scan-run-chip ${cls}">
           <div class="run-top">
-            <strong>#${r.id} &bull; ${timeStr}</strong>
+            <strong><button type="button" class="run-id-chip" data-eval-run="${r.id}" title="Lihat detail &amp; settingan Scan Run #${r.id}">#${r.id}</button> &bull; ${timeStr}</strong>
             <span class="badge ${stBadge}">${r.status}</span>
           </div>
           <div class="subtitle-sm">Pair: ${r.top_pairs_count} | Pre: ${r.prefiltered_count} | AI: ${r.ai_analyzed_count} | Setup: <b>${r.setups_created_count}</b></div>
@@ -281,6 +387,41 @@ function renderScanRunsList(runs) {
   });
 }
 
+function buildScanSettingsHtml(cfg, fallbackStrategy) {
+  if (!cfg) {
+    return `<div><strong>Strategi:</strong> <code>${escapeHtml(fallbackStrategy || "-")}</code> <span class="subtitle-sm">(scan lama sebelum pencatatan snapshot setting)</span></div>`;
+  }
+  const stratLabel = Array.isArray(cfg.active_strategies) && cfg.active_strategies.length
+    ? cfg.active_strategies.join(", ")
+    : fallbackStrategy || "-";
+  const maxVolStr = Number(cfg.max_24h_quote_volume || 0) > 0
+    ? `$${Number(cfg.max_24h_quote_volume).toLocaleString("en-US")}`
+    : "Unlimited";
+  return `
+    <div class="eval-settings-box">
+      <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
+      <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></div>
+      <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
+    </div>`;
+}
+
+function resolveSetupStrategyMeta(setup) {
+  const sp = setup.strategy_profile || {};
+  const stratObj = (state.strategies || []).find(
+    (x) => String(x.name || "").toUpperCase() === String(setup.strategy_used || "").toUpperCase()
+  );
+  const runTfs = setup.scan_run_settings?.strategy_timeframes || {};
+  const runProf = runTfs[setup.strategy_used] || runTfs[String(setup.strategy_used || "").toUpperCase()] || {};
+  return {
+    holdingPeriod: setup.holding_period || sp.holding_period || stratObj?.holding_period || null,
+    tradeStyle: sp.trade_style || stratObj?.trade_style || null,
+    htf: runProf.htf || sp.htf || stratObj?.suggested_htf || null,
+    ltf: runProf.ltf || sp.ltf || stratObj?.suggested_ltf || null,
+    klineLimit: runProf.kline_limit || sp.kline_limit || stratObj?.suggested_kline_limit || null,
+    expiryHours: runProf.expiry_hours || sp.expiry_hours || stratObj?.suggested_expiry_hours || null,
+  };
+}
+
 async function openScanEvaluationsModal(runId) {
   const modal = document.getElementById("scan-eval-modal");
   modal.classList.remove("hidden");
@@ -293,23 +434,13 @@ async function openScanEvaluationsModal(runId) {
     const data = await apiRequest(`/api/scanner/runs/${runId}/evaluations`);
     const r = data.run;
     const cfg = r.settings_snapshot || null;
-    const stratLabel = cfg && Array.isArray(cfg.active_strategies) && cfg.active_strategies.length
-      ? cfg.active_strategies.join(", ")
-      : r.strategy || "-";
-    const maxVolStr = Number(cfg.max_24h_quote_volume || 0) > 0
-      ? `$${Number(cfg.max_24h_quote_volume).toLocaleString("en-US")}`
-      : "Unlimited";
-    const settingsHtml = cfg
-      ? `
-        <div class="eval-settings-box">
-          <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
-          <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</code></div>
-          <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
-        </div>`
-      : `<div><strong>Strategi:</strong> <code>${escapeHtml(stratLabel)}</code> <span class="subtitle-sm">(scan lama sebelum pencatatan snapshot setting)</span></div>`;
+    const settingsHtml = buildScanSettingsHtml(cfg, r.strategy);
     const setupNames = (data.setups || []).map((s) => `${s.symbol} (${s.decision} ${s.strategy_used})`).join(", ");
+    const startedTxt = r.started_at ? formatJakartaDateTime(r.started_at, true) : "-";
+    const finishedTxt = r.finished_at ? formatJakartaDateTime(r.finished_at, true) : "-";
     document.getElementById("eval-modal-summary").innerHTML = `
       <div><strong>Status:</strong> ${r.status} &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
+      <div><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
       <div><strong>Ringkasan:</strong> Top Pair: ${r.top_pairs_count} | Lolos Pre-filter: ${r.prefiltered_count} | Dianalisis AI: ${r.ai_analyzed_count} | Setup Masuk: <b>${r.setups_created_count}</b></div>
       ${settingsHtml}
       ${setupNames ? `<div><strong>Setup Terbuat:</strong> ${escapeHtml(setupNames)}</div>` : ""}
@@ -442,7 +573,7 @@ async function loadSetups() {
   const dateVal = document.getElementById("filter-date").value;
   if (dateVal) {
     params.set("date", dateVal);
-    params.set("tz_offset", String(new Date().getTimezoneOffset()));
+    params.set("tz_offset", "-420");
   }
 
   params.set("limit", String(state.setupsPageSize));
@@ -471,11 +602,30 @@ async function loadSetups() {
       const dirBadge = s.decision === "LONG" ? "badge-long" : "badge-short";
       const meLine = s.manual_entry_price ? `<div class="text-accent">ME: ${fmtPrice(s.manual_entry_price)}</div>` : "";
       const closeLine = s.resolved_price ? `<div>Close: ${fmtPrice(s.resolved_price)}</div>` : "";
+      const meta = resolveSetupStrategyMeta(s);
+      const holdHtml = meta.holdingPeriod
+        ? `<div class="subtitle-sm">Lama: <b>${escapeHtml(meta.holdingPeriod)}</b></div>`
+        : "";
+      const tfParts = [];
+      if (meta.htf || meta.ltf) tfParts.push(`${meta.htf || "-"}/${meta.ltf || "-"}`);
+      if (meta.klineLimit) tfParts.push(`${meta.klineLimit}b`);
+      if (meta.expiryHours) tfParts.push(`Exp ${meta.expiryHours}j`);
+      const runChip = s.scan_run_id
+        ? ` <button type="button" class="run-id-chip" data-open-run="${s.scan_run_id}" title="Klik untuk melihat detail &amp; settingan Scan Run #${s.scan_run_id}">Run #${s.scan_run_id}</button>`
+        : "";
+      const tfLine =
+        tfParts.length || runChip
+          ? `<div class="subtitle-sm">${escapeHtml(tfParts.join(" \u2022 "))}${runChip}</div>`
+          : "";
       return `
         <tr class="${selectedCls}" data-id="${s.id}">
-          <td><strong>${s.symbol}</strong><br><small class="subtitle-sm">${new Date(s.created_at + "Z").toLocaleString()}</small></td>
+          <td><strong>${s.symbol}</strong><br><small class="subtitle-sm">${formatJakartaDateTime(s.created_at)}</small></td>
           <td><span class="badge ${dirBadge}">${s.decision}</span></td>
-          <td>${s.strategy_used}</td>
+          <td>
+            <strong>${escapeHtml(s.strategy_used)}</strong>
+            ${holdHtml}
+            ${tfLine}
+          </td>
           <td>
             <div>E: ${fmtPrice(s.entry_price)}</div>
             ${meLine}
@@ -485,11 +635,19 @@ async function loadSetups() {
           </td>
           <td>${Number(s.risk_reward_ratio).toFixed(2)}</td>
           <td>${s.confidence}%</td>
-          <td>${statusBadge(s.status, s.manual_action_at)}</td>
+          <td>${statusBadge(s)}</td>
           <td><button type="button" class="btn btn-secondary btn-sm" data-edit-setup="${s.id}">Edit</button></td>
         </tr>`;
     })
     .join("");
+
+  tbody.querySelectorAll("button[data-open-run]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const runId = Number(btn.dataset.openRun);
+      if (runId) openScanEvaluationsModal(runId);
+    });
+  });
 
   tbody.querySelectorAll("button[data-edit-setup]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
@@ -532,8 +690,29 @@ function initChartIfNeeded() {
     height: container.clientHeight || 460,
     layout: { background: { color: "#ffffff" }, textColor: "#65676b" },
     grid: { vertLines: { color: "#f0f2f5" }, horzLines: { color: "#f0f2f5" } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#dadde1" },
-    rightPriceScale: { borderColor: "#dadde1", minimumWidth: 74 },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScroll: {
+      mouseWheel: true,
+      pressedMouseMove: true,
+      horzTouchDrag: true,
+      vertTouchDrag: true,
+    },
+    handleScale: {
+      axisPressedMouseMove: { time: true, price: true },
+      axisDoubleClickReset: { time: true, price: true },
+      mouseWheel: true,
+      pinch: true,
+    },
+    kineticScroll: { mouse: true, touch: true },
+    localization: { locale: "id-ID", timeFormatter: formatChartJakartaTime },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: "#dadde1",
+      rightOffset: 10,
+      tickMarkFormatter: formatChartJakartaTickMark,
+    },
+    rightPriceScale: { borderColor: "#dadde1", minimumWidth: 78, autoScale: true },
   });
   state.candleSeries = state.chart.addCandlestickSeries({
     upColor: "#16a34a",
@@ -565,8 +744,19 @@ function initChartIfNeeded() {
     height: dssContainer.clientHeight || 170,
     layout: { background: { color: "#ffffff" }, textColor: "#65676b" },
     grid: { vertLines: { color: "#f0f2f5" }, horzLines: { color: "#f0f2f5" } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#dadde1" },
-    rightPriceScale: { borderColor: "#dadde1", autoScale: true, minimumWidth: 74 },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+    handleScale: { axisPressedMouseMove: { time: true, price: false }, mouseWheel: true, pinch: true },
+    kineticScroll: { mouse: true, touch: true },
+    localization: { locale: "id-ID", timeFormatter: formatChartJakartaTime },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: "#dadde1",
+      rightOffset: 10,
+      tickMarkFormatter: formatChartJakartaTickMark,
+    },
+    rightPriceScale: { borderColor: "#dadde1", autoScale: true, minimumWidth: 78 },
   });
   state.dssSeries = state.dssChart.addLineSeries({
     color: "#1877f2",
@@ -614,6 +804,7 @@ function initChartIfNeeded() {
   });
 
   state.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    scheduleOverlayRender();
     if (state.syncingTimeRange || !range || !state.dssChart) return;
     state.syncingTimeRange = true;
     state.dssChart.timeScale().setVisibleLogicalRange(range);
@@ -624,6 +815,27 @@ function initChartIfNeeded() {
     state.syncingTimeRange = true;
     state.chart.timeScale().setVisibleLogicalRange(range);
     state.syncingTimeRange = false;
+    scheduleOverlayRender();
+  });
+
+  let isChartPanning = false;
+  container.addEventListener("pointerdown", () => {
+    isChartPanning = true;
+  });
+  window.addEventListener("pointerup", () => {
+    if (isChartPanning) {
+      isChartPanning = false;
+      scheduleOverlayRender();
+    }
+  });
+  container.addEventListener("pointermove", () => {
+    if (isChartPanning) scheduleOverlayRender();
+  });
+  container.addEventListener("wheel", () => {
+    scheduleOverlayRender();
+  }, { passive: true });
+  container.addEventListener("dblclick", () => {
+    setTimeout(scheduleOverlayRender, 30);
   });
 
   const handleCrosshair = (param) => {
@@ -639,6 +851,7 @@ function initChartIfNeeded() {
 
   new ResizeObserver(() => {
     state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    scheduleOverlayRender();
   }).observe(container);
   new ResizeObserver(() => {
     if (dssContainer.clientWidth > 0 && dssContainer.clientHeight > 0) {
@@ -647,40 +860,490 @@ function initChartIfNeeded() {
   }).observe(dssContainer);
 }
 
+function scheduleOverlayRender() {
+  if (state.overlayRafPending) return;
+  state.overlayRafPending = true;
+  requestAnimationFrame(() => {
+    state.overlayRafPending = false;
+    renderPositionOverlay();
+  });
+}
+
+function formatPositionPrice(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return "-";
+  if (n >= 1000) return n.toFixed(2);
+  if (n >= 1) return n.toFixed(4);
+  return n.toPrecision(6);
+}
+
+function roundPositionPrice(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return n;
+  return Number(n.toFixed(n >= 1000 ? 2 : n >= 1 ? 4 : 8));
+}
+
+const SETUP_BOX_ID = 0;
+
+function getAutoPositionSide() {
+  if (state.selectedSetup && String(state.selectedSetup.decision).toUpperCase() === "SHORT") {
+    return "SHORT";
+  }
+  return "LONG";
+}
+
+function buildSetupPositionBox(setup) {
+  if (!setup) return null;
+  const side = String(setup.decision).toUpperCase() === "SHORT" ? "SHORT" : "LONG";
+  const hasManual =
+    setup.manual_entry_price !== null &&
+    setup.manual_entry_price !== undefined &&
+    Number(setup.manual_entry_price) > 0;
+  const entry = Number(hasManual ? setup.manual_entry_price : setup.entry_price);
+  const sl = Number(setup.stop_loss);
+  const tp = Number(setup.take_profit);
+  if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(tp)) return null;
+
+  let startIdx = Math.max(0, state.chartBarsCount - 28);
+  if (setup.created_at && state.chartCandles.length) {
+    const createdSec = Math.floor(new Date(setup.created_at + "Z").getTime() / 1000);
+    if (Number.isFinite(createdSec)) {
+      const idx = state.chartCandles.findIndex((c) => Number(c.time) >= createdSec);
+      if (idx >= 0) {
+        startIdx = Math.min(idx, Math.max(0, state.chartCandles.length - 6));
+      }
+    }
+  }
+  const endIdx = Math.max(startIdx + 18, state.chartBarsCount + 6);
+  return {
+    id: SETUP_BOX_ID,
+    isSetupBox: true,
+    setupId: setup.id,
+    isManualEntry: hasManual,
+    side,
+    entry: roundPositionPrice(entry),
+    sl: roundPositionPrice(sl),
+    tp: roundPositionPrice(tp),
+    startIdx,
+    endIdx,
+  };
+}
+
+function ensureSetupPositionBox() {
+  if (state.drawMode !== "setup" || !state.selectedSetup) return null;
+  if (!state.setupBox || state.setupBox.setupId !== state.selectedSetup.id) {
+    state.setupBox = buildSetupPositionBox(state.selectedSetup);
+  }
+  return state.setupBox;
+}
+
+function findOverlayBoxById(id) {
+  if (id === SETUP_BOX_ID) return state.setupBox;
+  return state.drawnPositions.find((p) => p.id === id) || null;
+}
+
+function getAllVisibleBoxes() {
+  const boxes = [];
+  if (state.drawMode === "setup") {
+    const sb = ensureSetupPositionBox();
+    if (sb) boxes.push(sb);
+  }
+  for (const p of state.drawnPositions) boxes.push(p);
+  return boxes;
+}
+
+function getActiveDrawnPosition() {
+  const boxes = getAllVisibleBoxes();
+  if (!boxes.length) return null;
+  const matched = boxes.find((p) => p.id === state.activePositionId);
+  if (matched) return matched;
+  if (state.drawMode === "setup" && state.setupBox) return state.setupBox;
+  return boxes[boxes.length - 1];
+}
+
+function updateDrawModeButtonLabel() {
+  const drawBtn = document.getElementById("btn-mode-draw");
+  if (drawBtn) {
+    drawBtn.textContent = state.selectedSetup ? `Mode Gambar (${getAutoPositionSide()})` : "Mode Gambar";
+  }
+  const setupBtn = document.getElementById("btn-mode-setup");
+  if (setupBtn) {
+    setupBtn.textContent = state.selectedSetup ? `Kotak Setup (${getAutoPositionSide()})` : "Kotak Setup";
+  }
+}
+
+function updatePositionToolBar() {
+  updateDrawModeButtonLabel();
+  const bar = document.getElementById("position-tool-bar");
+  const summary = document.getElementById("pos-bar-summary");
+  const fromSetupBtn = document.getElementById("btn-pos-from-setup");
+  const applyBtn = document.getElementById("btn-pos-apply");
+  const clearBtn = document.getElementById("btn-pos-clear");
+  if (!bar || !summary) return;
+
+  const isSetupMode = state.drawMode === "setup";
+  const isDrawMode = state.drawMode === "draw";
+  const visibleBoxes = getAllVisibleBoxes();
+  const pos = getActiveDrawnPosition();
+  bar.classList.toggle("hidden", !isDrawMode && !isSetupMode && !visibleBoxes.length);
+
+  if (fromSetupBtn) {
+    fromSetupBtn.textContent = "\u21ba Dari Setup";
+    fromSetupBtn.classList.toggle("hidden", !isDrawMode);
+  }
+
+  if (!pos) {
+    const autoSide = getAutoPositionSide();
+    const zoneDesc = autoSide === "LONG" ? "hijau di atas, merah di bawah" : "merah di atas, hijau di bawah";
+    if (isSetupMode) {
+      summary.innerHTML = `<b>Kotak Setup</b> aktif — pilih salah satu setup di tabel untuk menampilkan kotak Entry/SL/TP otomatis.`;
+    } else {
+      summary.innerHTML = state.selectedSetup
+        ? `<b>Mode Gambar (${autoSide})</b> (${zoneDesc}) — klik di chart untuk pasang posisi, atau klik <b>Dari Setup</b>.`
+        : `<b>Mode Gambar</b> aktif — pilih salah satu setup di tabel terlebih dahulu agar arah LONG/SHORT otomatis mengikuti setup.`;
+    }
+    if (applyBtn) applyBtn.classList.add("hidden");
+    if (clearBtn) clearBtn.classList.add("hidden");
+    return;
+  }
+
+  const risk = Math.abs(pos.entry - pos.sl);
+  const reward = Math.abs(pos.tp - pos.entry);
+  const rr = risk > 0 ? reward / risk : 0;
+  const slPct = pos.entry > 0 ? (risk / pos.entry) * 100 : 0;
+  const tpPct = pos.entry > 0 ? (reward / pos.entry) * 100 : 0;
+  const badgeCls = pos.side === "LONG" ? "badge-long" : "badge-short";
+  const sourceTag = pos.isSetupBox
+    ? ` <span class="badge badge-neutral">${pos.isManualEntry ? "Manual" : "AI"}</span>`
+    : "";
+  const modeHint = isSetupMode
+    ? ` <span class="subtitle-sm">&bull; Mode View (hover kotak untuk R:R; pilih Mode Gambar untuk edit SL/TP)</span>`
+    : state.drawMode === "normal"
+      ? ` <span class="subtitle-sm">&bull; Pilih Mode Gambar untuk edit garis</span>`
+      : "";
+
+  summary.innerHTML = `<span class="badge ${badgeCls}">${pos.side}</span>${sourceTag} E: <b>${formatPositionPrice(pos.entry)}</b> &bull; <span class="text-red">SL: <b>${formatPositionPrice(pos.sl)}</b> (-${slPct.toFixed(2)}%)</span> &bull; <span class="text-green">TP: <b>${formatPositionPrice(pos.tp)}</b> (+${tpPct.toFixed(2)}%)</span> &bull; R:R: <b>${rr.toFixed(2)}</b>${modeHint}`;
+  if (fromSetupBtn) fromSetupBtn.classList.toggle("hidden", !isDrawMode);
+  if (applyBtn) applyBtn.classList.toggle("hidden", isSetupMode || !state.selectedSetup);
+  if (clearBtn) clearBtn.classList.toggle("hidden", isSetupMode || pos.isSetupBox || state.drawnPositions.length === 0);
+}
+
+function renderPositionOverlay() {
+  const overlay = document.getElementById("position-overlay");
+  if (!overlay) return;
+  const boxes = getAllVisibleBoxes();
+  updatePositionToolBar();
+
+  const isPlacing = state.drawMode === "draw";
+  const isInteractive = state.drawMode === "draw";
+
+  overlay.classList.toggle("placing", isPlacing);
+  overlay.classList.toggle("interactive", isInteractive && boxes.length > 0);
+
+  if (!boxes.length || !state.chart || !state.candleSeries) {
+    overlay.innerHTML = "";
+    return;
+  }
+
+  const ts = state.chart.timeScale();
+  const cs = state.candleSeries;
+  const chartEl = document.getElementById("candlestick-chart");
+  const plotW = Math.max(0, (typeof ts.width === "function" ? ts.width() : 0) || ((chartEl ? chartEl.clientWidth : 800) - 78));
+  const plotH = Math.max(0, (chartEl ? chartEl.clientHeight : 460) - 26);
+  if (plotW > 0) overlay.style.width = `${plotW}px`;
+  if (plotH > 0) overlay.style.height = `${plotH}px`;
+
+  const active = getActiveDrawnPosition();
+  const html = [];
+
+  boxes.forEach((pos) => {
+    const x1 = ts.logicalToCoordinate(Math.round(pos.startIdx));
+    const x2Raw = ts.logicalToCoordinate(Math.round(pos.endIdx));
+    const yEntry = cs.priceToCoordinate(pos.entry);
+    const yTp = cs.priceToCoordinate(pos.tp);
+    const ySl = cs.priceToCoordinate(pos.sl);
+
+    if (x1 === null || yEntry === null || yTp === null || ySl === null) return;
+    const x2 = x2Raw !== null ? x2Raw : x1 + 120;
+
+    const left = Math.min(x1, x2);
+    const width = Math.max(40, Math.abs(x2 - x1));
+    const topY = Math.min(yEntry, yTp, ySl);
+    const bottomY = Math.max(yEntry, yTp, ySl);
+    const boxH = Math.max(12, bottomY - topY);
+
+    // LONG: TP di atas Entry (hijau atas, merah bawah); SHORT: SL di atas Entry (merah atas, hijau bawah)
+    const profitTop = Math.min(yEntry, yTp) - topY;
+    const profitH = Math.max(1, Math.abs(yTp - yEntry));
+    const lossTop = Math.min(yEntry, ySl) - topY;
+    const lossH = Math.max(1, Math.abs(ySl - yEntry));
+    const relTp = yTp - topY;
+    const relSl = ySl - topY;
+    const relEntry = yEntry - topY;
+
+    const risk = Math.abs(pos.entry - pos.sl);
+    const reward = Math.abs(pos.tp - pos.entry);
+    const rr = risk > 0 ? (reward / risk).toFixed(2) : "0.00";
+    const slPct = pos.entry > 0 ? ((risk / pos.entry) * 100).toFixed(2) : "0.00";
+    const tpPct = pos.entry > 0 ? ((reward / pos.entry) * 100).toFixed(2) : "0.00";
+    const isActive = active && active.id === pos.id;
+    const isReadonly = state.drawMode !== "draw";
+    const entryTag = pos.isSetupBox ? (pos.isManualEntry ? `${pos.side} (M)` : `${pos.side} (AI)`) : pos.side;
+
+    html.push(`
+      <div class="pos-box${isActive && !isReadonly ? " active" : ""}${isReadonly ? " readonly" : ""}" data-pos-id="${pos.id}" data-pos-handle="move" style="left:${left}px;top:${topY}px;width:${width}px;height:${boxH}px;">
+        <div class="pos-zone-profit" style="top:${profitTop}px;height:${profitH}px;"></div>
+        <div class="pos-zone-loss" style="top:${lossTop}px;height:${lossH}px;"></div>
+        <div class="pos-rr-hover-badge">R:R 1 : ${rr}</div>
+        <div class="pos-handle pos-handle-tp" data-pos-id="${pos.id}" data-pos-handle="tp" style="top:${relTp}px;">
+          <span class="pos-dot"></span>
+          <span class="pos-label pos-label-tp">TP ${formatPositionPrice(pos.tp)} (+${tpPct}% | ${rr}R)</span>
+        </div>
+        <div class="pos-handle pos-handle-entry" data-pos-id="${pos.id}" data-pos-handle="entry" style="top:${relEntry}px;">
+          <span class="pos-dot"></span>
+          <span class="pos-label pos-label-entry">${entryTag} ${formatPositionPrice(pos.entry)}</span>
+        </div>
+        <div class="pos-handle pos-handle-sl" data-pos-id="${pos.id}" data-pos-handle="sl" style="top:${relSl}px;">
+          <span class="pos-dot"></span>
+          <span class="pos-label pos-label-sl">SL ${formatPositionPrice(pos.sl)} (-${slPct}%)</span>
+        </div>
+        <div class="pos-handle-edge-r" data-pos-id="${pos.id}" data-pos-handle="resize-r" title="Geser lebar kotak"></div>
+      </div>
+    `);
+  });
+
+  overlay.innerHTML = html.join("");
+}
+
+function createPositionAtClick(side, clientX, clientY) {
+  if (!state.selectedSetup) {
+    showToast("Pilih salah satu setup terlebih dahulu untuk menggambar posisi.", true);
+    return;
+  }
+  if (!state.chart || !state.candleSeries) {
+    showToast("Chart belum siap, tunggu candlestick termuat.", true);
+    return;
+  }
+  const chartEl = document.getElementById("candlestick-chart");
+  const rect = chartEl.getBoundingClientRect();
+  const relX = clientX - rect.left;
+  const relY = clientY - rect.top;
+
+  const clickPrice = state.candleSeries.coordinateToPrice(relY);
+  const clickLogical = state.chart.timeScale().coordinateToLogical(relX);
+  if (clickPrice === null || !Number.isFinite(clickPrice) || clickPrice <= 0 || clickLogical === null) {
+    showToast("Klik tepat di area candlestick chart untuk memasang posisi.", true);
+    return;
+  }
+
+  const topPrice = state.candleSeries.coordinateToPrice(20);
+  const botPrice = state.candleSeries.coordinateToPrice(Math.max(60, rect.height - 50));
+  const visibleSpan = topPrice && botPrice ? Math.abs(topPrice - botPrice) : clickPrice * 0.04;
+  const riskUnit = Math.max(visibleSpan * 0.14, clickPrice * 0.005);
+
+  const isLong = side === "LONG";
+  const baseIdx = Math.round(clickLogical);
+  const id = state.nextPositionSeq++;
+  const newPos = {
+    id,
+    side,
+    entry: roundPositionPrice(clickPrice),
+    sl: roundPositionPrice(isLong ? Math.max(clickPrice * 0.05, clickPrice - riskUnit) : clickPrice + riskUnit),
+    tp: roundPositionPrice(isLong ? clickPrice + riskUnit * 2 : Math.max(clickPrice * 0.05, clickPrice - riskUnit * 2)),
+    startIdx: baseIdx,
+    endIdx: baseIdx + 20,
+  };
+  state.drawnPositions = [newPos];
+  state.activePositionId = id;
+  renderPositionOverlay();
+  return newPos;
+}
+
+function createPositionFromSelectedSetup() {
+  const s = state.selectedSetup;
+  if (!s) return;
+  if (state.drawMode === "setup") {
+    state.setupBox = buildSetupPositionBox(s);
+    state.activePositionId = SETUP_BOX_ID;
+    renderPositionOverlay();
+    return;
+  }
+  const built = buildSetupPositionBox(s);
+  if (!built) return;
+  const id = state.nextPositionSeq++;
+  state.drawnPositions = [{
+    ...built,
+    id,
+    isSetupBox: false,
+  }];
+  state.activePositionId = id;
+  setDrawMode("draw");
+}
+
+function syncSetupPriceLines() {
+  if (!state.candleSeries) return;
+  for (const pl of state.priceLines) {
+    state.candleSeries.removePriceLine(pl);
+  }
+  state.priceLines = [];
+  if (state.drawMode === "setup" || !state.selectedSetup) return;
+
+  const setup = state.selectedSetup;
+  const nextLines = [];
+  const hasManualEntry =
+    setup.manual_entry_price !== null &&
+    setup.manual_entry_price !== undefined &&
+    Number(setup.manual_entry_price) > 0;
+  if (hasManualEntry && Math.abs(Number(setup.manual_entry_price) - Number(setup.entry_price)) > 1e-12) {
+    nextLines.push(
+      state.candleSeries.createPriceLine({
+        price: setup.entry_price,
+        color: "#9ca3af",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "AI ENTRY",
+      }),
+      state.candleSeries.createPriceLine({
+        price: setup.manual_entry_price,
+        color: "#6b21a8",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        axisLabelVisible: true,
+        title: "ENTRY (MANUAL)",
+      })
+    );
+  } else {
+    nextLines.push(
+      state.candleSeries.createPriceLine({
+        price: hasManualEntry ? setup.manual_entry_price : setup.entry_price,
+        color: "#1877f2",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: hasManualEntry ? "ENTRY (MANUAL)" : `ENTRY (${setup.entry_type})`,
+      })
+    );
+  }
+  nextLines.push(
+    state.candleSeries.createPriceLine({
+      price: setup.stop_loss,
+      color: "#e41e3f",
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true,
+      title: "STOP LOSS",
+    }),
+    state.candleSeries.createPriceLine({
+      price: setup.take_profit,
+      color: "#16a34a",
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true,
+      title: "TAKE PROFIT",
+    })
+  );
+  state.priceLines = nextLines;
+}
+
+function setDrawMode(mode) {
+  state.drawMode = mode;
+  document.querySelectorAll(".btn-chip[data-draw-mode]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.drawMode === mode);
+  });
+  if (mode === "setup" && state.selectedSetup) {
+    ensureSetupPositionBox();
+    state.activePositionId = SETUP_BOX_ID;
+  }
+  syncSetupPriceLines();
+  renderPositionOverlay();
+}
+
+function fitAndUnlockChart() {
+  if (!state.chart || !state.candleSeries) return;
+  state.chart.priceScale("right").applyOptions({ autoScale: true });
+  state.candleSeries.priceScale().applyOptions({ autoScale: true });
+  state.chart.timeScale().fitContent();
+  if (state.dssChart) {
+    state.dssChart.priceScale("right").applyOptions({ autoScale: true });
+    const r = state.chart.timeScale().getVisibleLogicalRange();
+    if (r) state.dssChart.timeScale().setVisibleLogicalRange(r);
+  }
+  // Unlock autoScale after initial fit frame so user can drag chart freely up/down & left/right
+  requestAnimationFrame(() => {
+    if (state.chart && state.candleSeries) {
+      state.candleSeries.priceScale().applyOptions({ autoScale: false });
+      state.chart.priceScale("right").applyOptions({ autoScale: false });
+      renderPositionOverlay();
+    }
+  });
+}
+
 async function renderSetupChart(setup, isLiveRefresh = false) {
   if (!setup || state.chartRefreshing) return;
   state.chartRefreshing = true;
   initChartIfNeeded();
+  document.getElementById("chart-title").textContent = `${setup.symbol} (${setup.decision}) — ${setup.strategy_used}`;
 
   const isNewContext =
     state.renderedSetupId !== setup.id || state.renderedInterval !== state.chartInterval;
 
-  document.getElementById("chart-title").textContent = `${setup.symbol} (${setup.decision}) — ${setup.strategy_used}`;
-
   try {
-    const chartData = await apiRequest(`/api/charts/${setup.symbol}?interval=${state.chartInterval}&limit=160`);
-    state.candleSeries.setData(chartData.candles);
-
+    const chartData = await apiRequest(`/api/charts/${setup.symbol}?interval=${state.chartInterval}&limit=300`);
+    const candles = chartData.candles || [];
+    state.chartCandles = candles;
+    state.chartBarsCount = candles.length || 300;
+    if (isNewContext) state.setupBox = null;
     const showVolume = document.getElementById("toggle-volume")?.checked ?? true;
-    state.candleSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.06, bottom: showVolume ? 0.24 : 0.06 },
-    });
-    state.volumeSeries.setData(
-      showVolume
-        ? (chartData.candles || []).map((c) => ({
-            time: c.time,
-            value: c.volume,
-            color: c.close >= c.open ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)",
-          }))
-        : []
-    );
-
-    const showEma = document.getElementById("toggle-ema").checked;
-    state.ema21Series.setData(showEma ? chartData.ema21 : []);
-    state.ema50Series.setData(showEma ? chartData.ema50 : []);
-    state.ema200Series.setData(showEma ? chartData.ema200 : []);
-
+    const showEma = document.getElementById("toggle-ema")?.checked ?? false;
     const showDss = document.getElementById("toggle-dss")?.checked ?? true;
+
+    const latestCandle = candles.length ? candles[candles.length - 1] : null;
+    const canIncrementalUpdate =
+      !isNewContext &&
+      isLiveRefresh &&
+      latestCandle &&
+      state.lastCandleTime &&
+      latestCandle.time >= state.lastCandleTime &&
+      state.lastVolumeToggle === showVolume;
+
+    if (canIncrementalUpdate) {
+      state.candleSeries.update(latestCandle);
+      if (showVolume) {
+        state.volumeSeries.update({
+          time: latestCandle.time,
+          value: latestCandle.volume,
+          color: latestCandle.close >= latestCandle.open ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)",
+        });
+      }
+      if (showEma) {
+        if (chartData.ema21?.length) state.ema21Series.update(chartData.ema21[chartData.ema21.length - 1]);
+        if (chartData.ema50?.length) state.ema50Series.update(chartData.ema50[chartData.ema50.length - 1]);
+        if (chartData.ema200?.length) state.ema200Series.update(chartData.ema200[chartData.ema200.length - 1]);
+      }
+    } else {
+      state.candleSeries.setData(candles);
+      if (state.lastVolumeToggle !== showVolume || isNewContext) {
+        state.candleSeries.priceScale().applyOptions({
+          scaleMargins: { top: 0.06, bottom: showVolume ? 0.24 : 0.06 },
+        });
+        state.lastVolumeToggle = showVolume;
+      }
+      state.volumeSeries.setData(
+        showVolume
+          ? candles.map((c) => ({
+              time: c.time,
+              value: c.volume,
+              color: c.close >= c.open ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)",
+            }))
+          : []
+      );
+      state.ema21Series.setData(showEma ? chartData.ema21 : []);
+      state.ema50Series.setData(showEma ? chartData.ema50 : []);
+      state.ema200Series.setData(showEma ? chartData.ema200 : []);
+    }
+    state.lastCandleTime = latestCandle ? latestCandle.time : null;
+
     const dssWrap = document.getElementById("dss-chart-wrap");
     if (dssWrap) dssWrap.classList.toggle("hidden", !showDss);
     const dssArr = chartData.dss || [];
@@ -698,66 +1361,40 @@ async function renderSetupChart(setup, isLiveRefresh = false) {
     updateDssLegend(state.latestDssMain, state.latestDssSig);
 
     if (showDss && state.dssChart) {
-      state.dssSeries.setData(dssArr);
-      state.dssSignalSeries.setData(sigArr);
-      const dssEl = document.getElementById("dss-chart");
-      if (dssEl && dssEl.clientWidth > 0 && dssEl.clientHeight > 0) {
-        state.dssChart.applyOptions({
-          width: dssEl.clientWidth,
-          height: dssEl.clientHeight,
-        });
+      if (canIncrementalUpdate && dssArr.length && sigArr.length) {
+        state.dssSeries.update(dssArr[dssArr.length - 1]);
+        state.dssSignalSeries.update(sigArr[sigArr.length - 1]);
+      } else {
+        state.dssSeries.setData(dssArr);
+        state.dssSignalSeries.setData(sigArr);
+        const dssEl = document.getElementById("dss-chart");
+        if (dssEl && dssEl.clientWidth > 0 && dssEl.clientHeight > 0) {
+          state.dssChart.applyOptions({
+            width: dssEl.clientWidth,
+            height: dssEl.clientHeight,
+          });
+        }
+        state.dssChart.priceScale("right").applyOptions({ autoScale: true });
       }
-      state.dssChart.priceScale("right").applyOptions({ autoScale: true });
     } else if (state.dssSeries && state.dssSignalSeries) {
       state.dssSeries.setData([]);
       state.dssSignalSeries.setData([]);
     }
 
-    const lastCandle = chartData.candles && chartData.candles[chartData.candles.length - 1];
+    const lastCandle = latestCandle;
     const liveStr = lastCandle ? ` • Live: ${fmtPrice(lastCandle.close)}` : "";
     document.getElementById("chart-subtitle").textContent =
-      `Interval ${state.chartInterval}${liveStr} • Status: ${setup.status} • Updated ${new Date().toLocaleTimeString()}`;
+      `Interval ${state.chartInterval}${liveStr} • Status: ${setup.status} • Update ${formatJakartaTime()}`;
 
     if (isNewContext || !isLiveRefresh) {
-      for (const pl of state.priceLines) {
-        state.candleSeries.removePriceLine(pl);
-      }
-      state.priceLines = [
-        state.candleSeries.createPriceLine({
-          price: setup.entry_price,
-          color: "#1877f2",
-          lineWidth: 2,
-          lineStyle: LightweightCharts.LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `ENTRY (${setup.entry_type})`,
-        }),
-        state.candleSeries.createPriceLine({
-          price: setup.stop_loss,
-          color: "#e41e3f",
-          lineWidth: 2,
-          lineStyle: LightweightCharts.LineStyle.Solid,
-          axisLabelVisible: true,
-          title: "STOP LOSS",
-        }),
-        state.candleSeries.createPriceLine({
-          price: setup.take_profit,
-          color: "#16a34a",
-          lineWidth: 2,
-          lineStyle: LightweightCharts.LineStyle.Solid,
-          axisLabelVisible: true,
-          title: "TAKE PROFIT",
-        }),
-      ];
+      syncSetupPriceLines();
       if (isNewContext) {
-        state.chart.timeScale().fitContent();
-        if (state.dssChart) {
-          const r = state.chart.timeScale().getVisibleLogicalRange();
-          if (r) state.dssChart.timeScale().setVisibleLogicalRange(r);
-        }
+        fitAndUnlockChart();
       }
       state.renderedSetupId = setup.id;
       state.renderedInterval = state.chartInterval;
     }
+    scheduleOverlayRender();
   } catch (err) {
     if (!isLiveRefresh) {
       showToast(`Gagal memuat chart ${setup.symbol}: ${err.message}`, true);
@@ -768,26 +1405,71 @@ async function renderSetupChart(setup, isLiveRefresh = false) {
 }
 
 function selectSetup(setup) {
+  const symbolChanged = state.selectedSetup && state.selectedSetup.symbol !== setup.symbol;
   state.selectedSetup = setup;
+  state.setupBox = null;
+  if (symbolChanged && state.drawnPositions.length) {
+    state.drawnPositions = [];
+    state.activePositionId = null;
+  }
+  renderPositionOverlay();
   document.querySelectorAll("#setups-tbody tr[data-id]").forEach((tr) => {
     tr.classList.toggle("selected", Number(tr.dataset.id) === setup.id);
   });
 
+  const effEntry = setup.manual_entry_price ?? setup.entry_price;
   document.getElementById("setup-detail-body").classList.remove("hidden");
-  document.getElementById("d-entry-type").textContent = setup.entry_type;
-  document.getElementById("d-entry").textContent = fmtPrice(setup.entry_price);
+  document.getElementById("d-entry-type").textContent = setup.manual_entry_price ? "MANUAL" : setup.entry_type;
+  document.getElementById("d-entry").textContent = fmtPrice(effEntry);
   document.getElementById("d-sl").textContent = fmtPrice(setup.stop_loss);
   document.getElementById("d-tp").textContent = fmtPrice(setup.take_profit);
   document.getElementById("d-rr-conf").textContent = `${Number(setup.risk_reward_ratio).toFixed(2)}R / ${setup.confidence}%`;
   document.getElementById("d-regime").textContent = setup.market_regime;
   document.getElementById("d-ai-model").textContent = `${setup.llm_provider || "-"} / ${setup.llm_model || "-"}`;
-  document.getElementById("d-expires").textContent = new Date(setup.expires_at + "Z").toLocaleString();
+  document.getElementById("d-expires").textContent = formatJakartaDateTime(setup.expires_at);
   document.getElementById("d-manual-entry").textContent = setup.manual_entry_price
-    ? fmtPrice(setup.manual_entry_price)
+    ? `${fmtPrice(setup.manual_entry_price)} (AI: ${fmtPrice(setup.entry_price)})`
     : "-";
   document.getElementById("d-resolved-price").textContent = setup.resolved_price
     ? fmtPrice(setup.resolved_price)
     : "-";
+
+  const scanRefBox = document.getElementById("d-scan-run-box");
+  if (scanRefBox) {
+    const meta = resolveSetupStrategyMeta(setup);
+    const runBadge = setup.scan_run_id
+      ? `<button type="button" class="run-id-chip" id="btn-detail-run-chip" title="Klik untuk melihat detail Scan Run #${setup.scan_run_id}">Scan Run #${setup.scan_run_id}</button>`
+      : `<span class="badge badge-neutral">Tanpa Scan Run</span>`;
+    const runTimeStr = setup.scan_run_started_at
+      ? ` &bull; <span class="subtitle-sm">${escapeHtml(formatJakartaDateTime(setup.scan_run_started_at))}</span>`
+      : "";
+    const runEvalBtn = setup.scan_run_id
+      ? `<button type="button" class="btn btn-secondary btn-sm" id="btn-detail-open-run">Lihat Evaluasi Scan #${setup.scan_run_id}</button>`
+      : "";
+    const profBits = [
+      meta.holdingPeriod ? `Lama Trade: <b>${escapeHtml(meta.holdingPeriod)}</b>` : null,
+      meta.tradeStyle ? `Gaya: <b>${escapeHtml(meta.tradeStyle)}</b>` : null,
+      meta.htf || meta.ltf ? `TF: <b>${escapeHtml(meta.htf || "-")}/${escapeHtml(meta.ltf || "-")}</b>` : null,
+      meta.klineLimit ? `Candles: <b>${meta.klineLimit}</b>` : null,
+      meta.expiryHours ? `Expiry: <b>${meta.expiryHours}j</b>` : null,
+    ]
+      .filter(Boolean)
+      .join(" &bull; ");
+    scanRefBox.classList.remove("hidden");
+    scanRefBox.innerHTML = `
+      <div class="scan-ref-header">
+        <div><strong>Referensi Scan &amp; Experiment:</strong> ${runBadge}${runTimeStr}</div>
+        ${runEvalBtn}
+      </div>
+      ${profBits ? `<div><strong>Strategi (${escapeHtml(setup.strategy_used)}):</strong> ${profBits}</div>` : ""}
+      ${buildScanSettingsHtml(setup.scan_run_settings, setup.strategy_used)}
+    `;
+    const openDetailRun = () => {
+      if (setup.scan_run_id) openScanEvaluationsModal(setup.scan_run_id);
+    };
+    document.getElementById("btn-detail-open-run")?.addEventListener("click", openDetailRun);
+    document.getElementById("btn-detail-run-chip")?.addEventListener("click", openDetailRun);
+  }
   document.getElementById("d-rationale").textContent = setup.rationale;
   document.getElementById("d-invalidation").textContent = setup.invalidation_reason;
   document.getElementById("manual-entry-input").value = setup.manual_entry_price ?? "";
@@ -807,7 +1489,58 @@ function selectSetup(setup) {
     <div class="snap-item"><span>24h Volume</span><strong>$${Number(ticker.quote_volume_24h || 0).toLocaleString()}</strong></div>
   `;
 
+  renderSetupHistory(setup);
   renderSetupChart(setup);
+}
+
+function renderSetupHistory(setup) {
+  const box = document.getElementById("d-history-list");
+  if (!box) return;
+  const aiPay = setup.ai_payload || {};
+  const initEntry = aiPay.entry_price ?? setup.entry_price;
+  const initSl = aiPay.stop_loss ?? setup.stop_loss;
+  const initTp = aiPay.take_profit ?? setup.take_profit;
+  const createdBaselineHtml = `<div class="history-item"><div><span class="badge badge-open">CREATED</span> <strong>Setup dibuat oleh sistem (AI ${escapeHtml(setup.entry_type || "-")})</strong> &bull; E: <b>${fmtPrice(initEntry)}</b> &bull; SL: <b>${fmtPrice(initSl)}</b> &bull; TP: <b>${fmtPrice(initTp)}</b></div><span class="subtitle-sm">${escapeHtml(formatJakartaDateTime(setup.created_at))}</span></div>`;
+
+  const rows = [];
+  if (Array.isArray(setup.status_history) && setup.status_history.length) {
+    const hasCreated = setup.status_history.some((h) => h && h.event === "CREATED");
+    if (!hasCreated) {
+      rows.push(createdBaselineHtml);
+    }
+    for (const h of setup.status_history) {
+      const timeTxt = h.at ? formatJakartaDateTime(h.at) : "-";
+      if (h.event === "CREATED") {
+        const cEntry = h.price ?? initEntry;
+        const cSl = h.stop_loss ?? initSl;
+        const cTp = h.take_profit ?? initTp;
+        rows.push(
+          `<div class="history-item"><div><span class="badge badge-open">CREATED</span> <strong>Setup dibuat oleh sistem (AI ${escapeHtml(setup.entry_type || "-")})</strong> &bull; E: <b>${fmtPrice(cEntry)}</b> &bull; SL: <b>${fmtPrice(cSl)}</b> &bull; TP: <b>${fmtPrice(cTp)}</b></div><span class="subtitle-sm">${escapeHtml(timeTxt)}</span></div>`
+        );
+        continue;
+      }
+      const pxTxt = h.price ? ` @ ${fmtPrice(h.price)}` : "";
+      const slTpTxt =
+        h.stop_loss != null && h.take_profit != null && (h.event === "MANUAL_TAKEN" || h.event === "RESET_OPEN")
+          ? ` (SL: ${fmtPrice(h.stop_loss)}, TP: ${fmtPrice(h.take_profit)})`
+          : "";
+      rows.push(
+        `<div class="history-item"><div><span class="badge badge-neutral">${escapeHtml(h.event || h.status)}</span> <strong>${escapeHtml(h.note || h.status || "")}</strong>${pxTxt}${slTpTxt}</div><span class="subtitle-sm">${escapeHtml(timeTxt)}</span></div>`
+      );
+    }
+  } else {
+    rows.push(createdBaselineHtml);
+    if (setup.entry_hit_at) {
+      rows.push(`<div class="history-item"><div><span class="badge badge-entry-hit">ENTRY_HIT</span> Tersentuh Entry @ ${fmtPrice(setup.entry_price)}</div><span class="subtitle-sm">${escapeHtml(formatJakartaDateTime(setup.entry_hit_at))}</span></div>`);
+    }
+    if (setup.missed_tp_at) {
+      rows.push(`<div class="history-item"><div><span class="badge badge-missed-tp">TP NO ENTRY</span> Harga tembus TP @ ${fmtPrice(setup.missed_tp_price)} tanpa Entry</div><span class="subtitle-sm">${escapeHtml(formatJakartaDateTime(setup.missed_tp_at))}</span></div>`);
+    }
+    if (setup.resolved_at) {
+      rows.push(`<div class="history-item"><div><span class="badge badge-neutral">${escapeHtml(setup.status)}</span> Selesai @ ${fmtPrice(setup.resolved_price)}</div><span class="subtitle-sm">${escapeHtml(formatJakartaDateTime(setup.resolved_at))}</span></div>`);
+    }
+  }
+  box.innerHTML = rows.join("");
 }
 
 function parseOptionalFloatText(raw) {
@@ -823,10 +1556,14 @@ async function updateManualStatus(newStatus, overrides = null) {
   const notes = overrides ? overrides.manual_notes : document.getElementById("manual-notes-input").value;
   let manualEntry = null;
   let resolvedPrice = null;
+  let stopLoss = null;
+  let takeProfit = null;
 
   if (overrides) {
     manualEntry = overrides.manual_entry_price;
     resolvedPrice = overrides.resolved_price;
+    stopLoss = overrides.stop_loss ?? null;
+    takeProfit = overrides.take_profit ?? null;
   } else if (newStatus === "MANUAL_TAKEN") {
     const parsed = parseOptionalFloatText(document.getElementById("manual-entry-input").value);
     if (Number.isNaN(parsed)) {
@@ -837,14 +1574,18 @@ async function updateManualStatus(newStatus, overrides = null) {
   }
 
   try {
+    const bodyObj = {
+      status: newStatus,
+      manual_entry_price: manualEntry,
+      resolved_price: resolvedPrice,
+      manual_notes: notes,
+    };
+    if (stopLoss !== null) bodyObj.stop_loss = stopLoss;
+    if (takeProfit !== null) bodyObj.take_profit = takeProfit;
+
     const updated = await apiRequest(`/api/setups/${state.selectedSetup.id}/status`, {
       method: "PATCH",
-      body: JSON.stringify({
-        status: newStatus,
-        manual_entry_price: manualEntry,
-        resolved_price: resolvedPrice,
-        manual_notes: notes,
-      }),
+      body: JSON.stringify(bodyObj),
     });
     state.selectedSetup = updated;
     selectSetup(updated);
@@ -860,6 +1601,7 @@ async function updateManualStatus(newStatus, overrides = null) {
 function syncEditStatusFields(setup) {
   const statusVal = document.getElementById("edit-status-select").value;
   const entryWrap = document.getElementById("edit-manual-entry-wrap");
+  const riskWrap = document.getElementById("edit-risk-levels-wrap");
   const closeWrap = document.getElementById("edit-close-price-wrap");
   const closeLabel = document.getElementById("edit-close-price-label");
   const closeInput = document.getElementById("edit-close-price");
@@ -868,9 +1610,14 @@ function syncEditStatusFields(setup) {
     statusVal === "MANUAL_TAKEN" ||
     statusVal === "CLOSED_MANUAL_TP" ||
     statusVal === "CLOSED_MANUAL_CL";
+  const showRiskLevels =
+    statusVal === "MANUAL_TAKEN" ||
+    statusVal === "ENTRY_HIT" ||
+    statusVal === "OPEN";
   const showClose = statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL";
 
   entryWrap.classList.toggle("hidden", !showEntry);
+  if (riskWrap) riskWrap.classList.toggle("hidden", !showRiskLevels);
   closeWrap.classList.toggle("hidden", !showClose);
 
   if (statusVal === "CLOSED_MANUAL_TP") {
@@ -892,6 +1639,8 @@ function openEditStatusModal(setup) {
   sel.value = allowed.has(setup.status) ? setup.status : "MANUAL_TAKEN";
 
   document.getElementById("edit-manual-entry").value = setup.manual_entry_price ?? setup.entry_price ?? "";
+  document.getElementById("edit-stop-loss").value = setup.stop_loss ?? "";
+  document.getElementById("edit-take-profit").value = setup.take_profit ?? "";
   document.getElementById("edit-close-price").value = setup.resolved_price ?? "";
   document.getElementById("edit-manual-notes").value = setup.manual_notes || "";
 
@@ -1684,7 +2433,10 @@ function wireEvents() {
     btn.addEventListener("click", async () => {
       if (!state.selectedSetup) return;
       const field = btn.dataset.copyField;
-      const rawVal = state.selectedSetup[field];
+      const rawVal =
+        field === "entry_price"
+          ? (state.selectedSetup.manual_entry_price ?? state.selectedSetup.entry_price)
+          : state.selectedSetup[field];
       if (rawVal === null || rawVal === undefined) return;
       const text = String(rawVal);
       try {
@@ -1724,6 +2476,195 @@ function wireEvents() {
     });
   });
 
+  document.querySelectorAll(".btn-chip[data-draw-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.drawMode || "normal";
+      setDrawMode(mode);
+    });
+  });
+
+  document.getElementById("btn-pos-from-setup")?.addEventListener("click", () => {
+    if (!state.selectedSetup) {
+      showToast("Pilih salah satu setup terlebih dahulu.", true);
+      return;
+    }
+    createPositionFromSelectedSetup();
+  });
+
+  const deleteActiveDrawnPosition = () => {
+    const active = getActiveDrawnPosition();
+    if (!active || active.isSetupBox) return false;
+    state.drawnPositions = state.drawnPositions.filter((p) => p.id !== active.id);
+    state.activePositionId = state.drawnPositions.length
+      ? state.drawnPositions[state.drawnPositions.length - 1].id
+      : state.drawMode === "setup"
+        ? SETUP_BOX_ID
+        : null;
+    renderPositionOverlay();
+    return true;
+  };
+
+  document.getElementById("btn-pos-clear")?.addEventListener("click", deleteActiveDrawnPosition);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const target = e.target;
+    if (
+      target &&
+      (target.isContentEditable ||
+        (typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable]")))
+    ) {
+      return;
+    }
+    const anyModalOpen = ["ai-modal", "edit-status-modal", "scan-eval-modal"].some((id) => {
+      const el = document.getElementById(id);
+      return el && !el.classList.contains("hidden");
+    });
+    if (anyModalOpen) return;
+    if (deleteActiveDrawnPosition()) {
+      e.preventDefault();
+    }
+  });
+
+  document.getElementById("btn-pos-apply")?.addEventListener("click", () => {
+    const pos = getActiveDrawnPosition();
+    if (!state.selectedSetup || !pos) return;
+    openEditStatusModal(state.selectedSetup);
+    const sel = document.getElementById("edit-status-select");
+    sel.value = "MANUAL_TAKEN";
+    document.getElementById("edit-manual-entry").value = pos.entry;
+    document.getElementById("edit-stop-loss").value = pos.sl;
+    document.getElementById("edit-take-profit").value = pos.tp;
+    syncEditStatusFields(state.selectedSetup);
+  });
+
+  const posOverlay = document.getElementById("position-overlay");
+  const stageEl = document.getElementById("candlestick-stage");
+  if (stageEl && posOverlay) {
+    const clearHoveredBoxes = () => {
+      posOverlay.querySelectorAll(".pos-box.is-hovered").forEach((el) => el.classList.remove("is-hovered"));
+    };
+    stageEl.addEventListener("pointermove", (e) => {
+      const boxes = posOverlay.querySelectorAll(".pos-box");
+      if (!boxes.length) return;
+      const oRect = posOverlay.getBoundingClientRect();
+      const mx = e.clientX - oRect.left;
+      const my = e.clientY - oRect.top;
+      let matched = null;
+      boxes.forEach((boxEl) => {
+        const bx = boxEl.offsetLeft;
+        const by = boxEl.offsetTop;
+        const bw = boxEl.offsetWidth;
+        const bh = boxEl.offsetHeight;
+        if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+          matched = boxEl;
+        }
+      });
+      boxes.forEach((boxEl) => {
+        boxEl.classList.toggle("is-hovered", boxEl === matched);
+      });
+    });
+    stageEl.addEventListener("pointerleave", clearHoveredBoxes);
+  }
+
+  if (posOverlay) {
+    posOverlay.addEventListener("pointerdown", (e) => {
+      if (state.drawMode !== "draw") return;
+
+      const handleEl = e.target.closest("[data-pos-handle]");
+      if (!handleEl) {
+        if (state.drawMode !== "draw") return;
+        e.preventDefault();
+        e.stopPropagation();
+        const created = createPositionAtClick(getAutoPositionSide(), e.clientX, e.clientY);
+        if (!created) return;
+        const startX = e.clientX;
+        const chartEl = document.getElementById("candlestick-chart");
+        const onCreateMove = (ev) => {
+          if (Math.abs(ev.clientX - startX) < 6 || !state.chart) return;
+          const rect = chartEl.getBoundingClientRect();
+          const curLog = state.chart.timeScale().coordinateToLogical(ev.clientX - rect.left);
+          if (curLog !== null) {
+            created.endIdx = Math.max(created.startIdx + 4, Math.round(curLog));
+            renderPositionOverlay();
+          }
+        };
+        const onCreateUp = () => {
+          window.removeEventListener("pointermove", onCreateMove);
+          window.removeEventListener("pointerup", onCreateUp);
+        };
+        window.addEventListener("pointermove", onCreateMove);
+        window.addEventListener("pointerup", onCreateUp);
+        return;
+      }
+
+      const targetId = Number(handleEl.dataset.posId);
+      const pos = findOverlayBoxById(targetId);
+      if (!pos) return;
+
+      state.activePositionId = pos.id;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const handle = handleEl.dataset.posHandle;
+      const chartEl = document.getElementById("candlestick-chart");
+      const rect = chartEl.getBoundingClientRect();
+      const startPrice = state.candleSeries.coordinateToPrice(e.clientY - rect.top);
+      const startLogical = state.chart.timeScale().coordinateToLogical(e.clientX - rect.left);
+      const orig = { ...pos };
+
+      const onMove = (ev) => {
+        if (!state.candleSeries || !state.chart) return;
+        const curRect = chartEl.getBoundingClientRect();
+        const curPrice = state.candleSeries.coordinateToPrice(ev.clientY - curRect.top);
+        const curLogical = state.chart.timeScale().coordinateToLogical(ev.clientX - curRect.left);
+        const isLong = pos.side === "LONG";
+        const minGap = Math.max(orig.entry * 0.0005, 1e-8);
+
+        if (handle === "tp" && curPrice !== null) {
+          pos.tp = roundPositionPrice(isLong ? Math.max(pos.entry + minGap, curPrice) : Math.min(pos.entry - minGap, curPrice));
+        } else if (handle === "sl" && curPrice !== null) {
+          pos.sl = roundPositionPrice(isLong ? Math.min(pos.entry - minGap, curPrice) : Math.max(pos.entry + minGap, curPrice));
+        } else if (handle === "entry" && curPrice !== null) {
+          const lowBound = isLong ? pos.sl + minGap : pos.tp + minGap;
+          const highBound = isLong ? pos.tp - minGap : pos.sl - minGap;
+          pos.entry = roundPositionPrice(Math.min(highBound, Math.max(lowBound, curPrice)));
+        } else if (handle === "resize-r" && curLogical !== null) {
+          pos.endIdx = Math.max(pos.startIdx + 4, curLogical);
+        } else if (handle === "move") {
+          if (curPrice !== null && startPrice !== null) {
+            const dp = curPrice - startPrice;
+            if (orig.sl + dp > 0 && orig.tp + dp > 0 && orig.entry + dp > 0) {
+              pos.entry = roundPositionPrice(orig.entry + dp);
+              pos.sl = roundPositionPrice(orig.sl + dp);
+              pos.tp = roundPositionPrice(orig.tp + dp);
+            }
+          }
+          if (curLogical !== null && startLogical !== null) {
+            const dl = curLogical - startLogical;
+            pos.startIdx = orig.startIdx + dl;
+            pos.endIdx = orig.endIdx + dl;
+          }
+        }
+        renderPositionOverlay();
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      renderPositionOverlay();
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+  }
+
+  document.getElementById("btn-reset-chart-view")?.addEventListener("click", () => {
+    fitAndUnlockChart();
+    showToast("Tampilan & skala harga chart di-reset (mode drag bebas tetap aktif).");
+  });
+
   document.querySelectorAll(".btn-chip[data-interval]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".btn-chip[data-interval]").forEach((b) => b.classList.remove("active"));
@@ -1761,10 +2702,16 @@ function wireEvents() {
   document.getElementById("btn-save-edit-status").addEventListener("click", async () => {
     const statusVal = document.getElementById("edit-status-select").value;
     const entryParsed = parseOptionalFloatText(document.getElementById("edit-manual-entry").value);
+    const slParsed = parseOptionalFloatText(document.getElementById("edit-stop-loss").value);
+    const tpParsed = parseOptionalFloatText(document.getElementById("edit-take-profit").value);
     const closeParsed = parseOptionalFloatText(document.getElementById("edit-close-price").value);
 
     if (Number.isNaN(entryParsed)) {
       showToast("Harga entry manual harus berupa angka positif.", true);
+      return;
+    }
+    if (Number.isNaN(slParsed) || Number.isNaN(tpParsed)) {
+      showToast("Stop Loss dan Take Profit harus berupa angka positif.", true);
       return;
     }
     if (statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL") {
@@ -1774,11 +2721,14 @@ function wireEvents() {
       }
     }
 
+    const canSendRisk = statusVal === "MANUAL_TAKEN" || statusVal === "ENTRY_HIT" || statusVal === "OPEN";
     const ok = await updateManualStatus(statusVal, {
       manual_entry_price:
         statusVal === "MANUAL_TAKEN" || statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL"
           ? entryParsed
           : null,
+      stop_loss: canSendRisk ? slParsed : null,
+      take_profit: canSendRisk ? tpParsed : null,
       resolved_price:
         statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL" ? closeParsed : null,
       manual_notes: document.getElementById("edit-manual-notes").value,

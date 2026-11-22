@@ -280,6 +280,7 @@ class ScanPipeline:
         ai_params = inspect.signature(analyze_market_snapshot).parameters
         accepts_system_prompt = "system_prompt" in ai_params
         accepts_max_tokens = "max_tokens" in ai_params
+        accepts_min_conf = "min_confidence" in ai_params
 
         llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
 
@@ -294,6 +295,8 @@ class ScanPipeline:
                     }
                     if accepts_max_tokens:
                         kwargs["max_tokens"] = rt_cfg["llm_max_tokens"]
+                    if accepts_min_conf:
+                        kwargs["min_confidence"] = rt_cfg["min_confidence"]
                     if accepts_system_prompt:
                         kwargs["system_prompt"] = prompt_map.get(strat.strip().upper())
                     decision, raw_resp = await analyze_market_snapshot(**kwargs)
@@ -310,7 +313,7 @@ class ScanPipeline:
 
         for snap, strat, decision, raw_resp, err in ai_results:
             if err is not None or decision is None:
-                err_str = str(err) if err is not None else "Empty AI decision"
+                err_str = (str(err).strip() or type(err).__name__) if err is not None else "Empty AI decision"
                 ai_errors.append(f"{snap['symbol']} ({strat}): {err_str}")
                 db.add(
                     ScanEvaluation(
@@ -362,6 +365,22 @@ class ScanPipeline:
                 invalidation_reason=normalized.invalidation_reason,
                 rationale=normalized.rationale,
                 status="OPEN",
+                status_history=[
+                    {
+                        "at": now.isoformat(),
+                        "event": "CREATED",
+                        "status": "OPEN",
+                        "price": float(normalized.entry_price),
+                        "stop_loss": float(normalized.stop_loss),
+                        "take_profit": float(normalized.take_profit),
+                        "note": (
+                            f"Setup dibuat oleh sistem (AI {normalized.entry_type}) — "
+                            f"Entry: {float(normalized.entry_price):g}, "
+                            f"SL: {float(normalized.stop_loss):g}, "
+                            f"TP: {float(normalized.take_profit):g}"
+                        ),
+                    }
+                ],
                 expires_at=now + timedelta(hours=int(strat_expiry_hours)),
                 features_snapshot=snap,
                 ai_payload=normalized.model_dump(),

@@ -20,6 +20,254 @@ def _to_utc_ts(dt: datetime) -> int:
     return int(dt.timestamp())
 
 
+def _from_utc_ts(ts: int) -> datetime:
+    """Convert integer UTC epoch seconds to naive UTC datetime matching DB columns."""
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).replace(tzinfo=None)
+
+
+def ensure_created_history(setup: TradeSetup) -> list[dict[str, Any]]:
+    """Ensure setup.status_history starts with initial system-created Entry/SL/TP baseline."""
+    hist = list(setup.status_history or [])
+    if any(isinstance(h, dict) and h.get("event") == "CREATED" for h in hist):
+        return hist
+    ai_pay = setup.ai_payload if isinstance(setup.ai_payload, dict) else {}
+    init_entry = float(ai_pay.get("entry_price") or setup.entry_price)
+    init_sl = float(ai_pay.get("stop_loss") or setup.stop_loss)
+    init_tp = float(ai_pay.get("take_profit") or setup.take_profit)
+    created_dt = setup.created_at or utcnow()
+    created_item: dict[str, Any] = {
+        "at": created_dt.isoformat(),
+        "event": "CREATED",
+        "status": "OPEN",
+        "price": round(init_entry, 8),
+        "stop_loss": round(init_sl, 8),
+        "take_profit": round(init_tp, 8),
+        "note": (
+            f"Setup dibuat oleh sistem (AI {setup.entry_type}) — "
+            f"Entry: {init_entry:g}, SL: {init_sl:g}, TP: {init_tp:g}"
+        ),
+    }
+    return [created_item, *hist]
+
+
+def _append_setup_history(
+    setup: TradeSetup,
+    *,
+    event: str,
+    status: str,
+    price: float | None = None,
+    note: str = "",
+    at_dt: datetime | None = None,
+) -> None:
+    """Append an event entry onto setup.status_history with copy reassignment for ORM tracking."""
+    dt = at_dt or utcnow()
+    entry: dict[str, Any] = {
+        "at": dt.isoformat(),
+        "event": event,
+        "status": status,
+        "price": round(float(price), 8) if price is not None else None,
+        "stop_loss": float(setup.stop_loss),
+        "take_profit": float(setup.take_profit),
+        "note": note,
+    }
+    setup.status_history = [*ensure_created_history(setup), entry]
+
+
+def evaluate_setup_trace(
+    setup: TradeSetup,
+    last_price: float | None,
+    candles_since_open: list[dict[str, Any]],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Chronologically evaluate a setup against candles and live ticker, capturing entry/missed-TP trace."""
+    current_time = now or utcnow()
+    entry = float(setup.entry_price)
+    sl = float(setup.stop_loss)
+    tp = float(setup.take_profit)
+    direction = setup.decision
+    already_entered = setup.status in ("ENTRY_HIT", "MANUAL_TAKEN") or setup.entry_type == "MARKET"
+    entry_touched = already_entered
+
+    detected_entry_dt: datetime | None = (
+        current_time if (setup.status == "OPEN" and setup.entry_type == "MARKET") else None
+    )
+    detected_missed_tp_dt: datetime | None = None
+    detected_missed_tp_price: float | None = None
+
+    since_dt = (
+        setup.manual_action_at
+        if setup.status == "MANUAL_TAKEN" and setup.manual_action_at
+        else setup.created_at
+    )
+    since_ts = _to_utc_ts(since_dt)
+
+    for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
+        c_ts = int(candle["time"])
+        if c_ts < since_ts - 60:
+            continue
+        c_dt = _from_utc_ts(c_ts)
+        high = float(candle["high"])
+        low = float(candle["low"])
+
+        if direction == "LONG":
+            if not entry_touched and low <= entry:
+                entry_touched = True
+                detected_entry_dt = c_dt
+            if not entry_touched and high >= tp and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = c_dt
+                detected_missed_tp_price = tp
+            hit_sl = low <= sl
+            hit_tp = high >= tp and entry_touched
+            if hit_sl and hit_tp:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": sl,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if hit_sl:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": sl,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if hit_tp:
+                return {
+                    "new_status": "HIT_TP",
+                    "resolved_price": tp,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+        elif direction == "SHORT":
+            if not entry_touched and high >= entry:
+                entry_touched = True
+                detected_entry_dt = c_dt
+            if not entry_touched and low <= tp and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = c_dt
+                detected_missed_tp_price = tp
+            hit_sl = high >= sl
+            hit_tp = low <= tp and entry_touched
+            if hit_sl and hit_tp:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": sl,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if hit_sl:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": sl,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if hit_tp:
+                return {
+                    "new_status": "HIT_TP",
+                    "resolved_price": tp,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+
+    # Check live ticker lastPrice (catches movement between candle buckets)
+    if last_price is not None and last_price > 0:
+        if direction == "LONG":
+            if last_price <= sl:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if not entry_touched and last_price <= entry:
+                entry_touched = True
+                detected_entry_dt = detected_entry_dt or current_time
+            if not entry_touched and last_price >= tp and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = current_time
+                detected_missed_tp_price = last_price
+            if last_price >= tp and entry_touched:
+                return {
+                    "new_status": "HIT_TP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+        elif direction == "SHORT":
+            if last_price >= sl:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if not entry_touched and last_price >= entry:
+                entry_touched = True
+                detected_entry_dt = detected_entry_dt or current_time
+            if not entry_touched and last_price <= tp and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = current_time
+                detected_missed_tp_price = last_price
+            if last_price <= tp and entry_touched:
+                return {
+                    "new_status": "HIT_TP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+
+    if setup.expires_at:
+        exp_ts = _to_utc_ts(setup.expires_at)
+        now_ts = _to_utc_ts(current_time)
+        if now_ts >= exp_ts:
+            return {
+                "new_status": "EXPIRED",
+                "resolved_price": last_price,
+                "resolved_dt": current_time,
+                "entry_hit_dt": detected_entry_dt,
+                "missed_tp_dt": detected_missed_tp_dt,
+                "missed_tp_price": detected_missed_tp_price,
+            }
+
+    if setup.status == "OPEN" and entry_touched:
+        return {
+            "new_status": "ENTRY_HIT",
+            "resolved_price": None,
+            "resolved_dt": None,
+            "entry_hit_dt": detected_entry_dt or current_time,
+            "missed_tp_dt": detected_missed_tp_dt,
+            "missed_tp_price": detected_missed_tp_price,
+        }
+
+    return {
+        "new_status": None,
+        "resolved_price": None,
+        "resolved_dt": None,
+        "entry_hit_dt": detected_entry_dt,
+        "missed_tp_dt": detected_missed_tp_dt,
+        "missed_tp_price": detected_missed_tp_price,
+    }
+
+
 def evaluate_setup_against_market(
     setup: TradeSetup,
     last_price: float | None,
@@ -30,78 +278,8 @@ def evaluate_setup_against_market(
 
     Returns (new_status, resolved_price) or (None, None) if unchanged.
     """
-    current_time = now or utcnow()
-    entry = float(setup.entry_price)
-    sl = float(setup.stop_loss)
-    tp = float(setup.take_profit)
-    direction = setup.decision
-    entry_touched = setup.status in ("ENTRY_HIT", "MANUAL_TAKEN") or setup.entry_type == "MARKET"
-
-    # For MANUAL_TAKEN, evaluate candles only from when the user marked it taken;
-    # otherwise evaluate from setup creation (with 60s alignment for Min1 candle bucket).
-    since_dt = (
-        setup.manual_action_at
-        if setup.status == "MANUAL_TAKEN" and setup.manual_action_at
-        else setup.created_at
-    )
-    since_ts = _to_utc_ts(since_dt)
-
-    # Check historical candles since creation/action in chronological order so first touch wins
-    for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
-        if int(candle["time"]) < since_ts - 60:
-            continue
-        high = float(candle["high"])
-        low = float(candle["low"])
-        if direction == "LONG":
-            if low <= entry:
-                entry_touched = True
-            hit_sl = low <= sl
-            hit_tp = high >= tp and entry_touched
-            if hit_sl and hit_tp:
-                return "HIT_SL", sl
-            if hit_sl:
-                return "HIT_SL", sl
-            if hit_tp:
-                return "HIT_TP", tp
-        elif direction == "SHORT":
-            if high >= entry:
-                entry_touched = True
-            hit_sl = high >= sl
-            hit_tp = low <= tp and entry_touched
-            if hit_sl and hit_tp:
-                return "HIT_SL", sl
-            if hit_sl:
-                return "HIT_SL", sl
-            if hit_tp:
-                return "HIT_TP", tp
-
-    # Also check live ticker lastPrice (catches price already at or past entry/SL/TP between ticks)
-    if last_price is not None and last_price > 0:
-        if direction == "LONG":
-            if last_price <= entry:
-                entry_touched = True
-            if last_price <= sl:
-                return "HIT_SL", last_price
-            if last_price >= tp and entry_touched:
-                return "HIT_TP", last_price
-        elif direction == "SHORT":
-            if last_price >= entry:
-                entry_touched = True
-            if last_price >= sl:
-                return "HIT_SL", last_price
-            if last_price <= tp and entry_touched:
-                return "HIT_TP", last_price
-
-    if setup.expires_at:
-        exp_ts = _to_utc_ts(setup.expires_at)
-        now_ts = _to_utc_ts(current_time)
-        if now_ts >= exp_ts:
-            return "EXPIRED", last_price
-
-    if setup.status == "OPEN" and entry_touched:
-        return "ENTRY_HIT", None
-
-    return None, None
+    trace = evaluate_setup_trace(setup, last_price=last_price, candles_since_open=candles_since_open, now=now)
+    return trace["new_status"], trace["resolved_price"]
 
 
 def _select_kline_params(oldest_since: datetime, now: datetime) -> tuple[str, int]:
@@ -155,27 +333,84 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
         last_price = float(ticker["lastPrice"]) if ticker.get("lastPrice") else None
         candles = kline_map.get(setup.symbol, [])
 
-        new_status, resolved_price = evaluate_setup_against_market(
+        trace = evaluate_setup_trace(
             setup=setup,
             last_price=last_price,
             candles_since_open=candles,
             now=now,
         )
+
+        # Record intermediate events even if overall status remains OPEN
+        if trace["missed_tp_dt"] is not None and setup.missed_tp_at is None:
+            setup.missed_tp_at = trace["missed_tp_dt"]
+            setup.missed_tp_price = (
+                Decimal(f"{trace['missed_tp_price']:.8f}")
+                if trace["missed_tp_price"] is not None
+                else setup.take_profit
+            )
+            _append_setup_history(
+                setup,
+                event="TP_BEFORE_ENTRY",
+                status=setup.status,
+                price=trace["missed_tp_price"],
+                note="Harga menembus TP sebelum menyentuh Limit Entry",
+                at_dt=trace["missed_tp_dt"],
+            )
+
+        if setup.status in ("OPEN", "ENTRY_HIT") and trace["entry_hit_dt"] is not None and setup.entry_hit_at is None:
+            setup.entry_hit_at = trace["entry_hit_dt"]
+            _append_setup_history(
+                setup,
+                event="ENTRY_HIT",
+                status="ENTRY_HIT",
+                price=float(setup.entry_price),
+                note=f"Harga menyentuh Entry ({setup.entry_type})",
+                at_dt=trace["entry_hit_dt"],
+            )
+
+        new_status = trace["new_status"]
+        resolved_price = trace["resolved_price"]
         if new_status:
             setup.status = new_status
             if new_status == "ENTRY_HIT":
                 stats["entry_hit"] += 1
             else:
-                setup.resolved_at = now
+                ev_dt = trace["resolved_dt"] or now
+                setup.resolved_at = ev_dt
                 setup.resolved_price = (
                     Decimal(f"{resolved_price:.8f}") if resolved_price is not None else None
                 )
                 if new_status == "HIT_TP":
                     stats["hit_tp"] += 1
+                    _append_setup_history(
+                        setup,
+                        event="HIT_TP",
+                        status="HIT_TP",
+                        price=resolved_price,
+                        note="Kena Take Profit (Manual Taken)" if setup.manual_action_at else "Kena Take Profit setelah Entry",
+                        at_dt=ev_dt,
+                    )
                 elif new_status == "HIT_SL":
                     stats["hit_sl"] += 1
+                    had_entry = bool(setup.entry_hit_at or setup.manual_action_at)
+                    _append_setup_history(
+                        setup,
+                        event="HIT_SL" if had_entry else "SL_BEFORE_ENTRY",
+                        status="HIT_SL",
+                        price=resolved_price,
+                        note="Kena Stop Loss setelah Entry" if had_entry else "Jebol Stop Loss sebelum menyentuh Entry",
+                        at_dt=ev_dt,
+                    )
                 elif new_status == "EXPIRED":
                     stats["expired"] += 1
+                    _append_setup_history(
+                        setup,
+                        event="EXPIRED",
+                        status="EXPIRED",
+                        price=resolved_price,
+                        note="Setup expired (sempat kena TP tanpa Entry)" if setup.missed_tp_at and not setup.entry_hit_at else "Melewati batas Setup Expiry",
+                        at_dt=ev_dt,
+                    )
 
     db.commit()
     return stats

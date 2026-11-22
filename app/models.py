@@ -140,11 +140,15 @@ class TradeSetup(Base):
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[str] = mapped_column(String(24), default="OPEN", nullable=False)
+    entry_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missed_tp_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missed_tp_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     manual_action_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     manual_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     manual_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     features_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)

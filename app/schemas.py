@@ -72,17 +72,25 @@ class SetupOut(BaseModel):
     invalidation_reason: str
     rationale: str
     status: str
+    entry_hit_at: Optional[datetime] = None
+    missed_tp_at: Optional[datetime] = None
+    missed_tp_price: Optional[float] = None
     manual_action_at: Optional[datetime] = None
     manual_entry_price: Optional[float] = None
     manual_notes: Optional[str] = None
     resolved_price: Optional[float] = None
     resolved_at: Optional[datetime] = None
+    status_history: Optional[list[dict[str, Any]]] = None
     expires_at: datetime
     features_snapshot: dict[str, Any]
     ai_payload: dict[str, Any]
     created_at: datetime
     updated_at: datetime
     live_price: Optional[float] = None
+    holding_period: Optional[str] = None
+    strategy_profile: Optional[dict[str, Any]] = None
+    scan_run_started_at: Optional[datetime] = None
+    scan_run_settings: Optional[dict[str, Any]] = None
 
 
 class SetupListResponse(BaseModel):
@@ -105,6 +113,8 @@ class SetupStatusUpdate(BaseModel):
         "EXPIRED",
     ]
     manual_entry_price: Optional[float] = Field(default=None, gt=0)
+    stop_loss: Optional[float] = Field(default=None, gt=0)
+    take_profit: Optional[float] = Field(default=None, gt=0)
     resolved_price: Optional[float] = Field(default=None, gt=0)
     manual_notes: Optional[str] = Field(default=None, max_length=2000)
 
