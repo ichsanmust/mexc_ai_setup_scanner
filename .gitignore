@@ -1,0 +1,27 @@
+# Virtualenv & Python artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment & local secrets
+.env
+.env.*
+!.env.example
+
+# Local databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# OS / IDE artifacts
+.DS_Store
+.vscode/
+.idea/

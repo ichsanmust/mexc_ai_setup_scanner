@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>MEXC AI Setup Scanner</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge">M</div>
+      <div>
+        <h1>MEXC AI Setup Scanner</h1>
+        <p class="subtitle">Public Futures Data &bull; Manual Execution &bull; Risk Guard</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div id="active-llm-pill" class="llm-pill" title="Provider & Model Aktif">
+        <span class="dot"></span>
+        <span id="active-llm-label">Loading AI...</span>
+      </div>
+      <button id="btn-open-ai-modal" class="btn btn-secondary">Settings &amp; AI Models</button>
+      <button id="btn-run-tracker" class="btn btn-secondary">Check Outcomes</button>
+      <button id="btn-run-scan" class="btn btn-primary">Run Scan Now</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="system-error-banner" class="error-banner hidden" role="alert">
+      <div class="error-banner-content">
+        <strong id="error-banner-title">Terjadi Error</strong>
+        <p id="error-banner-msg">-</p>
+      </div>
+      <button id="btn-dismiss-error" class="btn-icon" title="Tutup">&times;</button>
+    </div>
+
+    <!-- KPI & Strategy Performance Row -->
+    <section class="analytics-grid">
+      <div class="kpi-grid">
+        <div class="card kpi-card">
+          <span class="kpi-label">Total Setups</span>
+          <strong id="kpi-total" class="kpi-value">0</strong>
+        </div>
+        <div class="card kpi-card">
+          <span class="kpi-label">Active OPEN</span>
+          <strong id="kpi-open" class="kpi-value text-accent">0</strong>
+        </div>
+        <div class="card kpi-card">
+          <span class="kpi-label">Win Rate (TP vs SL)</span>
+          <strong id="kpi-winrate" class="kpi-value text-green">0%</strong>
+        </div>
+        <div class="card kpi-card">
+          <span class="kpi-label">Avg R:R Ratio</span>
+          <strong id="kpi-rr" class="kpi-value">0.00</strong>
+        </div>
+      </div>
+
+      <div class="card strategy-chart-card">
+        <div class="card-header">
+          <h3>Performa &amp; Akurasi per Strategi</h3>
+          <span id="scanner-status-badge" class="badge badge-neutral">Idle</span>
+        </div>
+        <div class="strategy-chart-wrap">
+          <canvas id="strategyChart"></canvas>
+        </div>
+        <div id="strategy-cards" class="strategy-mini-grid"></div>
+      </div>
+    </section>
+
+    <!-- Middle Row: 2 Columns (Left: Setups List, Right: Recent Scan Runs List) -->
+    <section class="middle-two-col">
+      <div class="card setups-panel">
+        <div class="card-header wrap">
+          <div class="title-with-info">
+            <h3>Daftar Setup Trading</h3>
+            <button type="button" id="btn-toggle-status-legend" class="info-btn" title="Klik untuk melihat arti status setup (Legend)">i</button>
+          </div>
+          <div class="filters-row">
+            <input id="filter-date" type="date" title="Filter setup berdasarkan tanggal" />
+            <button id="btn-clear-date" type="button" class="btn btn-secondary btn-sm" title="Reset tanggal">Reset</button>
+            <input id="filter-symbol" type="text" placeholder="Cari pair (BTC_USDT)..." />
+            <select id="filter-strategy">
+              <option value="ALL">Semua Strategi</option>
+              <option value="TREND_PULLBACK">TREND_PULLBACK</option>
+              <option value="BREAKOUT_MOMENTUM">BREAKOUT_MOMENTUM</option>
+              <option value="MEAN_REVERSION_SCALP">MEAN_REVERSION_SCALP</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="status-tabs" id="status-tabs">
+          <button class="tab active" data-status="ALL" title="Tampilkan semua status setup">ALL</button>
+          <button class="tab" data-status="OPEN" title="Setup aktif menunggu harga menyentuh Entry atau TP/SL">OPEN</button>
+          <button class="tab" data-status="ENTRY_HIT" title="Otomatis dari Tracker: harga pasar sudah menyentuh Entry, sedang berjalan ke TP/SL">ENTRY_HIT</button>
+          <button class="tab" data-status="HIT_TP" title="Harga sudah menyentuh Take Profit lebih dulu (Win)">HIT_TP</button>
+          <button class="tab" data-status="HIT_SL" title="Harga sudah menyentuh Stop Loss lebih dulu (Loss)">HIT_SL</button>
+          <button class="tab" data-status="EXPIRED" title="Setup melewati batas waktu Setup Expiry tanpa menyentuh TP/SL">EXPIRED</button>
+          <button class="tab" data-status="MANUAL_TAKEN" title="Order dieksekusi manual di MEXC dan tetap dipantau Tracker">TAKEN</button>
+          <button class="tab" data-status="MANUAL_SKIPPED" title="Ditandai manual oleh Anda bahwa setup ini dilewati / tidak diambil">SKIPPED</button>
+          <button class="tab" data-status="CLOSED_MANUAL_TP" title="Posisi ditutup manual dengan Take Profit">CLOSED_TP</button>
+          <button class="tab" data-status="CLOSED_MANUAL_CL" title="Posisi ditutup manual dengan Cut Loss">CLOSED_CL</button>
+        </div>
+
+        <div id="status-legend-box" class="status-legend-box hidden">
+          <div class="legend-header">
+            <strong>Keterangan Status Setup (Legend)</strong>
+            <button type="button" id="btn-close-status-legend" class="btn-icon" title="Tutup">&times;</button>
+          </div>
+          <div class="legend-grid">
+            <div class="legend-item"><span class="badge badge-open">OPEN</span><span>Setup valid baru &amp; sedang dipantau otomatis oleh Tracker ke harga live MEXC.</span></div>
+            <div class="legend-item"><span class="badge badge-entry-hit">ENTRY_HIT</span><span>Otomatis terdeteksi Tracker: harga pasar sudah menyentuh level <b>Entry</b>, sedang dipantau ke TP/SL.</span></div>
+            <div class="legend-item"><span class="badge badge-hit-tp">HIT_TP</span><span>Harga menyentuh <b>Take Profit</b> terlebih dahulu sebelum SL (dihitung Win).</span></div>
+            <div class="legend-item"><span class="badge badge-hit-sl">HIT_SL</span><span>Harga menyentuh <b>Stop Loss</b> terlebih dahulu (dihitung Loss).</span></div>
+            <div class="legend-item"><span class="badge badge-expired">EXPIRED</span><span>Melewati batas waktu <i>Setup Expiry</i> tanpa menyentuh TP maupun SL.</span></div>
+            <div class="legend-item"><span class="badge badge-manual">MANUAL_TAKEN</span><span>Tab <b>TAKEN</b>: Order dieksekusi manual di MEXC (bisa isi harga entry) &amp; tetap dipantau otomatis.</span></div>
+            <div class="legend-item"><span class="badge badge-neutral">MANUAL_SKIPPED</span><span>Tab <b>SKIPPED</b>: Anda menandai manual (<i>Skip</i>) bahwa setup ini tidak diambil.</span></div>
+            <div class="legend-item"><span class="badge badge-hit-tp">CLOSED_MANUAL_TP</span><span>Tab <b>CLOSED_TP</b>: Anda menutup posisi secara manual dengan Take Profit (harga TP dicatat).</span></div>
+            <div class="legend-item"><span class="badge badge-hit-sl">CLOSED_MANUAL_CL</span><span>Tab <b>CLOSED_CL</b>: Anda menutup posisi secara manual dengan Cut Loss (harga CL dicatat).</span></div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="setups-table">
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>Arah</th>
+                <th>Strategi</th>
+                <th>Entry / SL / TP</th>
+                <th>R:R</th>
+                <th>Conf</th>
+                <th>Status</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="setups-tbody">
+              <tr><td colspan="8" class="empty-cell">Memuat data setup...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="setups-pagination">
+          <div class="pagination-left">
+            <label for="setups-per-page">Per hal:</label>
+            <select id="setups-per-page" class="page-size-select">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+            <span id="setups-page-summary" class="subtitle-sm">0 data</span>
+          </div>
+          <div class="pagination-right">
+            <button type="button" id="btn-setups-prev" class="btn btn-secondary btn-sm">Prev</button>
+            <span id="setups-page-info" class="page-info">Hal 1 / 1</span>
+            <button type="button" id="btn-setups-next" class="btn btn-secondary btn-sm">Next</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="card scan-runs-card">
+        <div class="card-header wrap">
+          <h3>Riwayat Scan Terbaru</h3>
+          <span id="scan-runs-meta" class="subtitle-sm">-</span>
+        </div>
+        <div id="scan-runs-list" class="scan-runs-list"></div>
+        <div class="pagination-bar" id="runs-pagination">
+          <div class="pagination-left">
+            <label for="runs-per-page">Per hal:</label>
+            <select id="runs-per-page" class="page-size-select">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+            <span id="runs-page-summary" class="subtitle-sm">0 data</span>
+          </div>
+          <div class="pagination-right">
+            <button type="button" id="btn-runs-prev" class="btn btn-secondary btn-sm">Prev</button>
+            <span id="runs-page-info" class="page-info">Hal 1 / 1</span>
+            <button type="button" id="btn-runs-next" class="btn btn-secondary btn-sm">Next</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- Bottom Row: Full-Width Chart & Setup Detail -->
+    <section class="workspace-grid">
+      <div class="card detail-panel">
+        <div class="card-header wrap">
+          <div>
+            <h3 id="chart-title">Pilih setup untuk melihat chart</h3>
+            <span id="chart-subtitle" class="subtitle-sm">Candlestick MEXC Futures + Entry / SL / TP Levels</span>
+          </div>
+          <div class="chart-controls">
+            <button class="btn-chip" data-interval="Min5">5m</button>
+            <button class="btn-chip active" data-interval="Min15">15m</button>
+            <button class="btn-chip" data-interval="Min60">1H</button>
+            <button class="btn-chip" data-interval="Hour4">4H</button>
+            <button class="btn-chip" data-interval="Day1">1D</button>
+            <label class="ema-toggle">
+              <input type="checkbox" id="toggle-ema" />
+              <span>EMA 21/50/200</span>
+            </label>
+            <label class="ema-toggle">
+              <input type="checkbox" id="toggle-volume" checked />
+              <span>Volume</span>
+            </label>
+            <label class="ema-toggle">
+              <input type="checkbox" id="toggle-dss" checked />
+              <span>DSS Bressert</span>
+            </label>
+            <label class="ema-toggle" for="live-chart-interval">
+              <span>Live:</span>
+              <select id="live-chart-interval" class="live-select">
+                <option value="0">Off</option>
+                <option value="1000">1 detik</option>
+                <option value="2000" selected>2 detik</option>
+                <option value="3000">3 detik</option>
+                <option value="5000">5 detik</option>
+                <option value="10000">10 detik</option>
+                <option value="15000">15 detik</option>
+                <option value="30000">30 detik</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div id="candlestick-chart" class="chart-box"></div>
+        <div id="dss-chart-wrap" class="dss-chart-wrap">
+          <div class="dss-legend">
+            <span>DSS Bressert</span>
+            <small class="dss-params">10 9 5 80 20 60</small>
+            <strong id="dss-val-main" class="dss-blue">-</strong>
+            <strong id="dss-val-sig" class="dss-red">-</strong>
+          </div>
+          <div id="dss-chart" class="dss-chart-box"></div>
+        </div>
+
+        <div id="setup-detail-body" class="detail-body hidden">
+          <div class="levels-strip">
+            <div class="level-box">
+              <span>Entry (<em id="d-entry-type">-</em>)</span>
+              <div class="level-value-row">
+                <strong id="d-entry">-</strong>
+                <button type="button" class="copy-btn" data-copy-field="entry_price" title="Copy Entry Price">Copy</button>
+              </div>
+            </div>
+            <div class="level-box level-sl">
+              <span>Stop Loss</span>
+              <div class="level-value-row">
+                <strong id="d-sl">-</strong>
+                <button type="button" class="copy-btn" data-copy-field="stop_loss" title="Copy Stop Loss">Copy</button>
+              </div>
+            </div>
+            <div class="level-box level-tp">
+              <span>Take Profit</span>
+              <div class="level-value-row">
+                <strong id="d-tp">-</strong>
+                <button type="button" class="copy-btn" data-copy-field="take_profit" title="Copy Take Profit">Copy</button>
+              </div>
+            </div>
+            <div class="level-box">
+              <span>R:R / Conf</span>
+              <strong id="d-rr-conf">-</strong>
+            </div>
+          </div>
+
+          <div class="detail-meta">
+            <span>Regime: <strong id="d-regime">-</strong></span>
+            <span>AI: <strong id="d-ai-model">-</strong></span>
+            <span>Expires: <strong id="d-expires">-</strong></span>
+            <span>Entry Aktual: <strong id="d-manual-entry">-</strong></span>
+            <span>Close Price: <strong id="d-resolved-price">-</strong></span>
+          </div>
+
+          <div class="rationale-box">
+            <h4>AI Rationale</h4>
+            <p id="d-rationale">-</p>
+            <h4>Invalidation Reason</h4>
+            <p id="d-invalidation">-</p>
+          </div>
+
+          <div class="snapshot-grid" id="d-indicators"></div>
+
+          <div class="manual-actions">
+            <input id="manual-entry-input" type="text" placeholder="Harga entry aktual (opsional)..." style="max-width: 210px;" />
+            <input id="manual-notes-input" type="text" placeholder="Catatan eksekusi manual (opsional)..." />
+            <button id="btn-mark-taken" class="btn btn-green">Mark Taken</button>
+            <button id="btn-mark-skipped" class="btn btn-muted">Skip</button>
+            <button id="btn-open-edit-status" class="btn btn-secondary">Edit Status / Close</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal: Settings & AI Models -->
+  <div id="ai-modal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Pengaturan Aplikasi &amp; Model AI</h2>
+        <button id="btn-close-ai-modal" class="btn-icon">&times;</button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="tab active" data-modal-tab="tab-ai">AI Provider &amp; Models</button>
+        <button class="tab" data-modal-tab="tab-scanner">Scanner, MEXC &amp; Risk Guard</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="tab-scanner" class="modal-tab-pane hidden">
+          <div id="setting-info-box" class="setting-info-box hidden">
+            <div>
+              <strong id="setting-info-title">Info Pengaturan</strong>
+              <p id="setting-info-desc">-</p>
+            </div>
+            <button type="button" id="btn-close-setting-info" class="btn-icon">&times;</button>
+          </div>
+
+          <div class="scanner-settings-section">
+            <h3>
+              Mode Scanner &amp; Jadwal
+              <button type="button" class="info-btn" data-info-title="Mode Scanner & Jadwal" data-info="Auto Scan menjalankan scan berkala sesuai Scan Interval. Manual Only hanya menjalankan scan saat Anda menekan tombol 'Run Scan Now'. Tracker Interval mengatur seberapa sering status setup OPEN dicek terhadap harga live MEXC untuk TP/SL/Expired.">i</button>
+            </h3>
+            <div class="scanner-settings-grid">
+              <div class="scanner-mode-radios">
+                <label class="radio-title">
+                  <input type="radio" name="scan_mode" value="auto" />
+                  <span>Auto Scan (Terjadwal)</span>
+                </label>
+                <label class="radio-title">
+                  <input type="radio" name="scan_mode" value="manual" />
+                  <span>Manual Only (Klik Tombol Scan)</span>
+                </label>
+              </div>
+              <div class="scanner-num-fields">
+                <div>
+                  <label for="cfg-scan-interval">
+                    Scan Interval (Menit)
+                    <button type="button" class="info-btn" data-info-title="Scan Interval (Menit)" data-info="Jeda waktu antar siklus auto-scan jika mode Auto Scan aktif. Contoh: 15 berarti scanner memindai ulang pasar setiap 15 menit.">i</button>
+                  </label>
+                  <input id="cfg-scan-interval" type="number" min="1" max="1440" value="15" />
+                </div>
+                <div>
+                  <label for="cfg-tracker-interval">
+                    Tracker Interval (Detik)
+                    <button type="button" class="info-btn" data-info-title="Tracker Interval (Detik)" data-info="Seberapa sering background tracker memeriksa harga live MEXC untuk mengubah status setup OPEN menjadi HIT_TP, HIT_SL, atau EXPIRED. Default: 60 detik.">i</button>
+                  </label>
+                  <input id="cfg-tracker-interval" type="number" min="15" max="3600" value="60" />
+                </div>
+                <div>
+                  <label for="cfg-setup-expiry">
+                    Setup Expiry (Jam)
+                    <button type="button" class="info-btn" data-info-title="Setup Expiry (Jam)" data-info="Batas waktu maksimal sebuah setup berstatus OPEN. Jika melewati durasi ini harga belum menyentuh TP maupun SL, status otomatis menjadi EXPIRED.">i</button>
+                  </label>
+                  <input id="cfg-setup-expiry" type="number" min="1" max="168" value="12" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-form-grid">
+            <div class="settings-card">
+              <h4>
+                Market Scanner &amp; Strategi
+                <button type="button" class="info-btn" data-info-title="Market Scanner & Strategi" data-info="Mengatur berapa banyak pair terlikuid yang dipindai, jumlah candle historis, timeframe analisa (HTF & LTF), serta strategi AI mana saja yang aktif.">i</button>
+              </h4>
+              <div class="field-grid-2">
+                <div>
+                  <label for="cfg-top-n-pairs">
+                    Top N Pairs
+                    <button type="button" class="info-btn" data-info-title="Top N Pairs" data-info="Jumlah pair USDT-M Futures teratas berdasarkan volume 24 jam terbesar di MEXC yang akan dipindai. Contoh: 20 memindai 20 pair paling likuid (semakin besar = semakin banyak panggilan AI).">i</button>
+                  </label>
+                  <input id="cfg-top-n-pairs" type="number" min="1" max="100" value="30" />
+                </div>
+                <div>
+                  <label for="cfg-kline-limit">
+                    Kline Limit (Candles)
+                    <button type="button" class="info-btn" data-info-title="Kline Limit (Candles)" data-info="Jumlah candlestick historis per timeframe yang diambil dari MEXC (rekomendasi: 250). Dibatasi maks 500 agar fetch multi-pair & komputasi indikator cepat; indikator EMA 200, RSI 14, ATR 14, & Vol MA20 hanya membutuhkan >= 200 candle.">i</button>
+                  </label>
+                  <input id="cfg-kline-limit" type="number" min="60" max="500" value="250" />
+                </div>
+                <div>
+                  <label for="cfg-htf-interval">
+                    HTF Interval
+                    <button type="button" class="info-btn" data-info-title="HTF Interval (Higher Timeframe)" data-info="Timeframe besar untuk membaca arah tren utama dan level mayor (contoh: Min60 / 1H).">i</button>
+                  </label>
+                  <select id="cfg-htf-interval">
+                    <option value="Min30">Min30</option>
+                    <option value="Min60">Min60 (1H)</option>
+                    <option value="Hour4">Hour4 (4H)</option>
+                    <option value="Day1">Day1 (1D)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="cfg-ltf-interval">
+                    LTF Interval
+                    <button type="button" class="info-btn" data-info-title="LTF Interval (Lower Timeframe)" data-info="Timeframe kecil untuk mencari titik entry presisi, pullback, breakout, atau pantulan range (contoh: Min15 / 15m).">i</button>
+                  </label>
+                  <select id="cfg-ltf-interval">
+                    <option value="Min5">Min5 (5m)</option>
+                    <option value="Min15">Min15 (15m)</option>
+                    <option value="Min30">Min30 (30m)</option>
+                    <option value="Min60">Min60 (1H)</option>
+                  </select>
+                </div>
+              </div>
+              <label class="field-block-label">
+                Active Strategies
+                <button type="button" class="info-btn" data-info-title="Active Strategies" data-info="Daftar strategi diambil langsung dari tabel 'strategies' di MySQL. Centang atau gunakan tabel Kelola Strategi di bawah untuk menambah strategi baru, mengubah aturan prompt, serta mengaktifkan/menonaktifkan strategi.">i</button>
+              </label>
+              <div id="cfg-strategy-list" class="strategy-checks"></div>
+            </div>
+
+            <div class="settings-card">
+              <h4>
+                MEXC Futures API &amp; LLM Runtime
+                <button type="button" class="info-btn" data-info-title="MEXC API & LLM Runtime" data-info="Konfigurasi endpoint publik MEXC Futures (misal https://contract.mexc.fm jika contract.mexc.com diblokir ISP), proxy opsional, serta batas concurrency dan timeout.">i</button>
+              </h4>
+              <label for="cfg-mexc-base-url">
+                MEXC Base URL
+                <button type="button" class="info-btn" data-info-title="MEXC Base URL" data-info="Domain public REST API MEXC Futures. Default https://contract.mexc.com atau mirror resmi seperti https://contract.mexc.fm jika domain utama diblokir ISP.">i</button>
+              </label>
+              <input id="cfg-mexc-base-url" type="text" placeholder="https://contract.mexc.fm" />
+              <label for="cfg-mexc-proxy-url">
+                MEXC Proxy URL (Opsional)
+                <button type="button" class="info-btn" data-info-title="MEXC Proxy URL" data-info="Opsional HTTP/SOCKS proxy (mis. http://127.0.0.1:7890) khusus untuk koneksi ke MEXC jika jaringan lokal membatasi akses langsung.">i</button>
+              </label>
+              <input id="cfg-mexc-proxy-url" type="text" placeholder="Kosongkan jika langsung" />
+              <div class="field-grid-3">
+                <div>
+                  <label for="cfg-mexc-concurrency">
+                    MEXC Concurrency
+                    <button type="button" class="info-btn" data-info-title="MEXC Concurrency" data-info="Jumlah request paralel maksimal ke API publik MEXC saat mengambil data kline.">i</button>
+                  </label>
+                  <input id="cfg-mexc-concurrency" type="number" min="1" max="20" value="5" />
+                </div>
+                <div>
+                  <label for="cfg-llm-timeout">
+                    LLM Timeout (s)
+                    <button type="button" class="info-btn" data-info-title="LLM Timeout (Detik)" data-info="Batas waktu tunggu tiap panggilan API AI. Untuk model :free atau reasoning yang agak lambat, disarankan 45–90 detik.">i</button>
+                  </label>
+                  <input id="cfg-llm-timeout" type="number" min="5" max="300" value="45" />
+                </div>
+                <div>
+                  <label for="cfg-llm-concurrency">
+                    LLM Concurrency
+                    <button type="button" class="info-btn" data-info-title="LLM Concurrency" data-info="Jumlah panggilan AI paralel. Untuk model gratis (:free) sebaiknya 1–2 agar terhindar dari rate-limit 429; untuk model berbayar bisa 3–5.">i</button>
+                  </label>
+                  <input id="cfg-llm-concurrency" type="number" min="1" max="20" value="3" />
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <h4>
+                Pre-Filter &amp; Risk Guard
+                <button type="button" class="info-btn" data-info-title="Pre-Filter & Risk Guard" data-info="Filter deterministik di Python sebelum dan sesudah memanggil AI untuk menghemat token serta menjaga kualitas setup.">i</button>
+              </h4>
+              <div class="field-grid-2">
+                <div>
+                  <label for="cfg-min-vol">
+                    Min 24h Quote Volume (USDT)
+                    <button type="button" class="info-btn" data-info-title="Min 24h Quote Volume (USDT)" data-info="Batas minimal transaksi 24 jam dalam USDT agar pair tidak sepi/illiquid. Contoh: 5,000,000 ($5 Juta). Pair di bawah angka ini dilewati sebelum masuk Top N.">i</button>
+                  </label>
+                  <input id="cfg-min-vol" type="text" inputmode="numeric" value="5,000,000" />
+                  <small id="cfg-min-vol-hint" class="num-hint">$5 Juta USDT</small>
+                </div>
+                <div>
+                  <label for="cfg-max-vol">
+                    Max 24h Quote Volume (USDT)
+                    <button type="button" class="info-btn" data-info-title="Max 24h Quote Volume (USDT)" data-info="Batas maksimal volume 24 jam (USDT). Isi 0 jika tanpa batas atas. Untuk memindai altcoin mid-cap dan melewati koin besar (BTC/ETH/SOL), isi mis. 50,000,000 atau 100,000,000.">i</button>
+                  </label>
+                  <input id="cfg-max-vol" type="text" inputmode="numeric" value="0" placeholder="0 = Tanpa batas" />
+                  <small id="cfg-max-vol-hint" class="num-hint">0 = Tanpa batas atas</small>
+                </div>
+                <div>
+                  <label for="cfg-min-atr">
+                    Min ATR (%)
+                    <button type="button" class="info-btn" data-info-title="Min ATR (%)" data-info="Batas minimal volatilitas ATR(14) relatif terhadap harga di LTF. Contoh 0.25% menyaring pair yang terlalu datar/mati sehingga menghemat biaya & waktu AI.">i</button>
+                  </label>
+                  <input id="cfg-min-atr" type="number" min="0" max="50" step="0.05" value="0.25" />
+                </div>
+                <div>
+                  <label for="cfg-max-atr">
+                    Max ATR (%)
+                    <button type="button" class="info-btn" data-info-title="Max ATR (%)" data-info="Batas maksimal volatilitas ATR(14) di LTF. Contoh 8% menyaring koin yang bergerak liar/chop ekstrem agar tidak mudah terkena SL oleh noise.">i</button>
+                  </label>
+                  <input id="cfg-max-atr" type="number" min="0.1" max="100" step="0.1" value="8.0" />
+                </div>
+              </div>
+              <label for="cfg-min-confidence" class="field-block-label">
+                Min AI Confidence (%)
+                <button type="button" class="info-btn" data-info-title="Min AI Confidence (%)" data-info="Skor keyakinan minimal (0–100) dari AI agar setup diterima Risk Guard. Default 75: jika di bawah 75, otomatis ditolak menjadi NO_TRADE.">i</button>
+              </label>
+              <input id="cfg-min-confidence" type="number" min="0" max="100" value="75" />
+            </div>
+          </div>
+
+          <div class="scanner-settings-actions" style="margin-top: 14px;">
+            <button id="btn-save-scanner-settings" class="btn btn-primary">Simpan Semua Pengaturan Scanner</button>
+            <button id="btn-modal-run-scan" class="btn btn-green">Scan Sekarang (Manual)</button>
+          </div>
+
+          <hr class="divider" />
+
+          <div class="models-section">
+            <div class="models-header">
+              <div>
+                <h3>Kelola Strategi &amp; Prompt Aturan AI (Tabel Database)</h3>
+                <span id="strategies-count" class="subtitle-sm">Menampilkan 0 strategi</span>
+              </div>
+              <button type="button" id="btn-toggle-add-strategy" class="btn btn-secondary btn-sm">+ Tambah Strategi Baru</button>
+            </div>
+
+            <div id="strategy-form-card" class="add-model-card hidden">
+              <div class="add-model-card-header">
+                <strong id="strategy-form-title">Tambah Strategi Baru ke Database</strong>
+                <button type="button" id="btn-cancel-strategy-form" class="btn-icon" title="Tutup">&times;</button>
+              </div>
+              <input id="edit-strategy-id" type="hidden" value="" />
+              <div class="strategy-form-grid">
+                <div>
+                  <label for="strat-code">Kode Strategi (Unik, boleh edit mis. _SWING / _INTRADAY)</label>
+                  <input id="strat-code" type="text" placeholder="mis. TREND_PULLBACK_SWING" />
+                </div>
+                <div>
+                  <label for="strat-display-name">Nama Tampilan</label>
+                  <input id="strat-display-name" type="text" placeholder="mis. Trend Pullback (Swing)" />
+                </div>
+                <div>
+                  <label for="strat-min-rr">Min R:R Ratio</label>
+                  <input id="strat-min-rr" type="number" min="0.5" max="20" step="0.1" value="1.5" />
+                </div>
+                <div class="strategy-active-check-wrap">
+                  <label class="ema-toggle">
+                    <input id="strat-is-active" type="checkbox" checked />
+                    <span>Aktif saat Scan</span>
+                  </label>
+                </div>
+              </div>
+              <div class="strategy-suggest-grid">
+                <div>
+                  <label for="strat-style">Tipe Trading</label>
+                  <select id="strat-style">
+                    <option value="SCALP">SCALP</option>
+                    <option value="INTRADAY">INTRADAY</option>
+                    <option value="INTRADAY_SWING">INTRADAY / SHORT-SWING</option>
+                    <option value="SWING">SWING</option>
+                    <option value="POSITION">POSITION (MINGGU / BULAN)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="strat-holding-period">Estimasi Lama Trade</label>
+                  <input id="strat-holding-period" type="text" placeholder="mis. 4 - 24 Jam / 2 - 7 Hari / 1 - 4 Minggu" />
+                </div>
+                <div>
+                  <label for="strat-suggested-htf">Sugesti HTF</label>
+                  <select id="strat-suggested-htf">
+                    <option value="Min30">Min30 (30m)</option>
+                    <option value="Min60">Min60 (1H)</option>
+                    <option value="Hour4">Hour4 (4H)</option>
+                    <option value="Day1">Day1 (1D)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="strat-suggested-ltf">Sugesti LTF</label>
+                  <select id="strat-suggested-ltf">
+                    <option value="Min5">Min5 (5m)</option>
+                    <option value="Min15">Min15 (15m)</option>
+                    <option value="Min30">Min30 (30m)</option>
+                    <option value="Min60">Min60 (1H)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="strat-suggested-limit">Sugesti Candles</label>
+                  <input id="strat-suggested-limit" type="number" min="60" max="500" value="250" />
+                </div>
+                <div>
+                  <label for="strat-suggested-expiry">Sugesti Expiry (Jam)</label>
+                  <input id="strat-suggested-expiry" type="number" min="1" max="168" value="12" />
+                </div>
+              </div>
+              <div class="strategy-form-full">
+                <label for="strat-description">Ringkasan Singkat (Opsional)</label>
+                <input id="strat-description" type="text" placeholder="Deskripsi singkat aturan strategi" />
+              </div>
+              <div class="strategy-form-full">
+                <label for="strat-prompt-text">Isi Teks Prompt Aturan AI (System Prompt)</label>
+                <textarea id="strat-prompt-text" rows="8" placeholder="Tulis aturan analisa lengkap untuk AI di sini... Pastikan menginstruksikan strategy_used sama persis dengan Kode Strategi."></textarea>
+              </div>
+              <div class="strategy-form-actions">
+                <button type="button" id="btn-cancel-strategy-form-2" class="btn btn-secondary btn-sm">Batal</button>
+                <button type="button" id="btn-save-strategy" class="btn btn-primary btn-sm">Simpan Strategi</button>
+              </div>
+            </div>
+
+            <div class="table-wrap modal-table-wrap">
+              <table class="setups-table">
+                <thead>
+                  <tr>
+                    <th>Strategi &amp; Tipe</th>
+                    <th>Lama Trade</th>
+                    <th>Sugesti Setting</th>
+                    <th>Min R:R</th>
+                    <th>Status</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="strategies-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-ai" class="modal-tab-pane">
+          <div class="provider-section">
+          <h3>1. Konfigurasi Provider LLM (Disimpan di MySQL)</h3>
+          <div class="provider-grid">
+            <div class="provider-card">
+              <label class="radio-title">
+                <input type="radio" name="active_provider" value="commandcode" />
+                <span>Command Code AI</span>
+              </label>
+              <label>Base URL</label>
+              <input id="cfg-cmd-url" type="text" placeholder="https://api.commandcode.ai/provider/v1/chat/completions" />
+              <label>API Key <small id="cfg-cmd-key-status" class="key-status"></small></label>
+              <input id="cfg-cmd-key" type="password" placeholder="Biarkan kosong jika tidak mengubah key" />
+            </div>
+
+            <div class="provider-card">
+              <label class="radio-title">
+                <input type="radio" name="active_provider" value="openrouter" />
+                <span>OpenRouter</span>
+              </label>
+              <label>Base URL</label>
+              <input id="cfg-or-url" type="text" placeholder="https://openrouter.ai/api/v1/chat/completions" />
+              <label>API Key <small id="cfg-or-key-status" class="key-status"></small></label>
+              <input id="cfg-or-key" type="password" placeholder="Biarkan kosong jika tidak mengubah key" />
+            </div>
+
+            <div class="provider-card">
+              <label class="radio-title">
+                <input type="radio" name="active_provider" value="custom" />
+                <span>Custom OpenAI-Compatible</span>
+              </label>
+              <label>Base URL</label>
+              <input id="cfg-custom-url" type="text" placeholder="https://..." />
+              <label>API Key <small id="cfg-custom-key-status" class="key-status"></small></label>
+              <input id="cfg-custom-key" type="password" placeholder="Biarkan kosong jika tidak mengubah key" />
+            </div>
+          </div>
+
+          <div class="provider-actions">
+            <button id="btn-save-ai-settings" class="btn btn-primary">Simpan Provider Settings</button>
+            <button id="btn-test-ai-conn" class="btn btn-secondary">Test Connection</button>
+            <span id="ai-test-result" class="test-result"></span>
+          </div>
+        </div>
+
+        <hr class="divider" />
+
+        <div class="models-section">
+          <div class="models-header">
+            <div>
+              <h3>2. Daftar &amp; Pilihan Model AI</h3>
+              <span id="ai-models-count" class="subtitle-sm">Menampilkan 0 model</span>
+            </div>
+            <button type="button" id="btn-toggle-add-model" class="btn btn-secondary btn-sm">+ Tambah Model Baru</button>
+          </div>
+
+          <div id="add-model-card" class="add-model-card hidden">
+            <div class="add-model-card-header">
+              <strong>Tambah Model AI Baru ke Database</strong>
+              <button type="button" id="btn-cancel-add-model" class="btn-icon" title="Tutup">&times;</button>
+            </div>
+            <div class="add-model-form">
+              <div>
+                <label for="new-model-name">Nama Tampilan</label>
+                <input id="new-model-name" type="text" placeholder="mis. Gemini 2.5 Pro" />
+              </div>
+              <div>
+                <label for="new-model-id">Model ID (API)</label>
+                <input id="new-model-id" type="text" placeholder="mis. google/gemini-2.5-pro" />
+              </div>
+              <div>
+                <label for="new-model-provider">Provider</label>
+                <select id="new-model-provider">
+                  <option value="commandcode">commandcode</option>
+                  <option value="openrouter">openrouter</option>
+                  <option value="custom">custom</option>
+                </select>
+              </div>
+              <div class="add-model-submit">
+                <button type="button" id="btn-add-model" class="btn btn-primary">Simpan Model</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ai-filter-bar">
+            <input id="ai-filter-search" type="text" placeholder="Filter / cari nama atau model ID di daftar..." />
+            <select id="ai-filter-provider">
+              <option value="ALL">Semua Provider</option>
+              <option value="commandcode">commandcode</option>
+              <option value="openrouter">openrouter</option>
+              <option value="custom">custom</option>
+            </select>
+            <label class="ema-toggle">
+              <input type="checkbox" id="ai-filter-free" />
+              <span>Free Only</span>
+            </label>
+          </div>
+
+          <div class="table-wrap modal-table-wrap">
+            <table class="setups-table">
+              <thead>
+                <tr>
+                  <th>Nama</th>
+                  <th>Model ID</th>
+                  <th>Provider</th>
+                  <th>Status</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="ai-models-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Scan Run Evaluation Details -->
+  <div id="scan-eval-modal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="eval-modal-title">Detail Evaluasi Scan Run</h2>
+        <button id="btn-close-eval-modal" class="btn-icon">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="eval-modal-summary" class="eval-summary-strip"></div>
+        <div class="status-tabs" id="eval-filter-tabs">
+          <button class="tab active" data-eval-filter="ALL">ALL</button>
+          <button class="tab" data-eval-filter="SETUP">MASUK SETUP</button>
+          <button class="tab" data-eval-filter="NO_TRADE">NO_TRADE</button>
+          <button class="tab" data-eval-filter="SKIPPED">PREFILTER SKIPPED</button>
+          <button class="tab" data-eval-filter="REJECTED">RISK GUARD REJECTED</button>
+          <button class="tab" data-eval-filter="ERROR">ERROR</button>
+        </div>
+        <div class="table-wrap modal-table-wrap" style="max-height: 420px;">
+          <table class="setups-table">
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>Strategi</th>
+                <th>Keputusan</th>
+                <th>Conf</th>
+                <th>Alasan / Detail</th>
+              </tr>
+            </thead>
+            <tbody id="eval-modal-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Setup Status / Manual Close -->
+  <div id="edit-status-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h2 id="edit-status-title">Edit Status Setup</h2>
+        <button id="btn-close-edit-status" class="btn-icon">&times;</button>
+      </div>
+      <div class="modal-body edit-status-form">
+        <div>
+          <label for="edit-status-select">Status Setup</label>
+          <select id="edit-status-select">
+            <option value="OPEN">OPEN (Pantau Ulang / Reset)</option>
+            <option value="ENTRY_HIT">ENTRY_HIT (Entry Tersentuh Pasar)</option>
+            <option value="MANUAL_TAKEN">MANUAL_TAKEN (Diambil Manual)</option>
+            <option value="MANUAL_SKIPPED">MANUAL_SKIPPED (Dilewati / Skip)</option>
+            <option value="CLOSED_MANUAL_TP">CLOSED_MANUAL_TP (Closed Position Manually TP)</option>
+            <option value="CLOSED_MANUAL_CL">CLOSED_MANUAL_CL (Closed Position Manually CL)</option>
+            <option value="EXPIRED">EXPIRED</option>
+          </select>
+        </div>
+        <div id="edit-manual-entry-wrap">
+          <label for="edit-manual-entry">Harga Entry Aktual (Opsional)</label>
+          <input id="edit-manual-entry" type="text" placeholder="mis. 1667.36" />
+        </div>
+        <div id="edit-close-price-wrap" class="hidden">
+          <label id="edit-close-price-label" for="edit-close-price">Harga Close (TP / CL)</label>
+          <input id="edit-close-price" type="text" placeholder="Masukkan harga close..." />
+        </div>
+        <div>
+          <label for="edit-manual-notes">Catatan (Opsional)</label>
+          <input id="edit-manual-notes" type="text" placeholder="Catatan eksekusi..." />
+        </div>
+        <div class="edit-status-actions">
+          <button type="button" id="btn-cancel-edit-status" class="btn btn-secondary">Batal</button>
+          <button type="button" id="btn-save-edit-status" class="btn btn-primary">Simpan Status</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
