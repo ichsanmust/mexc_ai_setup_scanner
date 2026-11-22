@@ -524,6 +524,13 @@
                 <button type="button" id="btn-cancel-strategy-form" class="btn-icon" title="Tutup">&times;</button>
               </div>
               <input id="edit-strategy-id" type="hidden" value="" />
+              <div class="strategy-import-box">
+                <div>
+                  <label for="strat-json-file"><strong>Import dari File JSON</strong> (hasil prompt AI)</label>
+                  <small class="subtitle-sm">Pilih file <code>.json</code> berisi 1 objek strategi (otomatis mengisi form di bawah) atau array JSON <code>[...]</code> (impor massal ke DB).</small>
+                </div>
+                <input id="strat-json-file" type="file" accept=".json,application/json" />
+              </div>
               <div class="strategy-form-grid">
                 <div>
                   <label for="strat-code">Kode Strategi (Unik, boleh edit mis. _SWING / _INTRADAY)</label>

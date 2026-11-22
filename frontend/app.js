@@ -1026,6 +1026,65 @@ function renderStrategySettingsUI(activeList = null) {
   });
 }
 
+function normalizeIntervalOption(raw, fallback) {
+  if (!raw) return fallback;
+  const val = String(raw).trim();
+  const map = {
+    "5m": "Min5",
+    min5: "Min5",
+    "15m": "Min15",
+    min15: "Min15",
+    "30m": "Min30",
+    min30: "Min30",
+    "1h": "Min60",
+    "60m": "Min60",
+    min60: "Min60",
+    "4h": "Hour4",
+    hour4: "Hour4",
+    "1d": "Day1",
+    day1: "Day1",
+  };
+  return map[val.toLowerCase()] || val;
+}
+
+function setSelectOrFallback(selectId, value, fallback) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const target = value || fallback;
+  const exists = Array.from(sel.options).some((opt) => opt.value === target);
+  sel.value = exists ? target : fallback;
+}
+
+function populateStrategyFormFields(strat = null) {
+  const data = strat || {};
+  document.getElementById("strat-code").value = data.name || "";
+  document.getElementById("strat-display-name").value = data.display_name || "";
+  document.getElementById("strat-min-rr").value = data.min_rr ?? 1.5;
+  document.getElementById("strat-is-active").checked =
+    data.is_active !== undefined ? Boolean(data.is_active) : true;
+  setSelectOrFallback(
+    "strat-style",
+    data.trade_style ? String(data.trade_style).trim().toUpperCase() : "INTRADAY",
+    "INTRADAY"
+  );
+  document.getElementById("strat-holding-period").value =
+    data.holding_period !== undefined && data.holding_period !== null ? data.holding_period : "4 - 24 Jam";
+  setSelectOrFallback(
+    "strat-suggested-htf",
+    normalizeIntervalOption(data.suggested_htf, "Min60"),
+    "Min60"
+  );
+  setSelectOrFallback(
+    "strat-suggested-ltf",
+    normalizeIntervalOption(data.suggested_ltf, "Min15"),
+    "Min15"
+  );
+  document.getElementById("strat-suggested-limit").value = data.suggested_kline_limit || 250;
+  document.getElementById("strat-suggested-expiry").value = data.suggested_expiry_hours || 12;
+  document.getElementById("strat-description").value = data.description || "";
+  document.getElementById("strat-prompt-text").value = data.prompt_text || "";
+}
+
 function openStrategyForm(strat = null) {
   const card = document.getElementById("strategy-form-card");
   const isEdit = Boolean(strat);
@@ -1034,21 +1093,86 @@ function openStrategyForm(strat = null) {
     : "Tambah Strategi Baru ke Database";
   document.getElementById("edit-strategy-id").value = isEdit ? String(strat.id) : "";
   const codeEl = document.getElementById("strat-code");
-  codeEl.value = isEdit ? strat.name : "";
   codeEl.disabled = false;
-  document.getElementById("strat-display-name").value = isEdit ? strat.display_name || "" : "";
-  document.getElementById("strat-min-rr").value = isEdit ? strat.min_rr : 1.5;
-  document.getElementById("strat-is-active").checked = isEdit ? Boolean(strat.is_active) : true;
-  document.getElementById("strat-style").value = isEdit ? (strat.trade_style || "INTRADAY") : "INTRADAY";
-  document.getElementById("strat-holding-period").value = isEdit ? (strat.holding_period || "") : "4 - 24 Jam";
-  document.getElementById("strat-suggested-htf").value = isEdit ? (strat.suggested_htf || "Min60") : "Min60";
-  document.getElementById("strat-suggested-ltf").value = isEdit ? (strat.suggested_ltf || "Min15") : "Min15";
-  document.getElementById("strat-suggested-limit").value = isEdit ? (strat.suggested_kline_limit || 250) : 250;
-  document.getElementById("strat-suggested-expiry").value = isEdit ? (strat.suggested_expiry_hours || 12) : 12;
-  document.getElementById("strat-description").value = isEdit ? strat.description || "" : "";
-  document.getElementById("strat-prompt-text").value = isEdit ? strat.prompt_text || "" : "";
+  const fileEl = document.getElementById("strat-json-file");
+  if (fileEl) fileEl.value = "";
+  populateStrategyFormFields(strat);
   card.classList.remove("hidden");
   card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function handleStrategyJsonUpload(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  try {
+    let rawText = (await file.text()).trim();
+    const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch) {
+      rawText = fenceMatch[1].trim();
+    }
+    const parsed = JSON.parse(rawText);
+
+    if (Array.isArray(parsed)) {
+      if (!parsed.length) {
+        showToast("File JSON array kosong.", true);
+        return;
+      }
+      let okCount = 0;
+      const errors = [];
+      for (const item of parsed) {
+        if (!item || typeof item !== "object" || !item.name || !item.prompt_text) {
+          errors.push("Item tidak memiliki name/prompt_text");
+          continue;
+        }
+        try {
+          await apiRequest("/api/strategies", {
+            method: "POST",
+            body: JSON.stringify({
+              name: String(item.name).trim(),
+              display_name: item.display_name ? String(item.display_name).trim() : String(item.name).trim(),
+              description: item.description ? String(item.description).trim() : null,
+              trade_style: item.trade_style ? String(item.trade_style).trim().toUpperCase() : "INTRADAY",
+              holding_period: item.holding_period ? String(item.holding_period).trim() : null,
+              suggested_htf: normalizeIntervalOption(item.suggested_htf, "Min60"),
+              suggested_ltf: normalizeIntervalOption(item.suggested_ltf, "Min15"),
+              suggested_kline_limit: Number(item.suggested_kline_limit) || 250,
+              suggested_expiry_hours: Number(item.suggested_expiry_hours) || 12,
+              prompt_text: String(item.prompt_text).trim(),
+              min_rr: Number(item.min_rr) || 1.5,
+              is_active: item.is_active !== undefined ? Boolean(item.is_active) : true,
+            }),
+          });
+          okCount += 1;
+        } catch (err) {
+          errors.push(`${item.name}: ${err.message}`);
+        }
+      }
+      if (okCount > 0) {
+        await Promise.all([loadAIModalData(false), loadAnalytics(), loadSetups()]);
+      }
+      if (errors.length) {
+        showToast(`Impor ${okCount} strategi selesai, ${errors.length} gagal: ${errors[0]}`, okCount === 0);
+      } else {
+        document.getElementById("strategy-form-card").classList.add("hidden");
+        showToast(`Berhasil mengimpor ${okCount} strategi dari ${file.name}.`);
+      }
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      showToast("Format JSON harus berupa objek strategi atau array objek.", true);
+      return;
+    }
+
+    populateStrategyFormFields(parsed);
+    showToast(`File '${file.name}' dimuat ke form. Periksa lalu klik Simpan Strategi.`);
+  } catch (err) {
+    showToast(`Gagal membaca JSON: ${err.message}`, true);
+  } finally {
+    input.value = "";
+  }
 }
 
 async function saveStrategyForm() {
@@ -1767,6 +1891,7 @@ function wireEvents() {
     document.getElementById("strategy-form-card").classList.add("hidden");
   });
   document.getElementById("btn-save-strategy").addEventListener("click", saveStrategyForm);
+  document.getElementById("strat-json-file").addEventListener("change", handleStrategyJsonUpload);
   document.getElementById("btn-save-ai-settings").addEventListener("click", saveAISettings);
   document.getElementById("btn-test-ai-conn").addEventListener("click", testAIConnection);
   document.getElementById("btn-toggle-add-model").addEventListener("click", () => {
