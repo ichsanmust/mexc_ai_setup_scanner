@@ -20,7 +20,11 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
   - Mendukung 9 status: `OPEN`, `ENTRY_HIT`, `MANUAL_TAKEN`, `MANUAL_SKIPPED`, `HIT_TP`, `HIT_SL`, `EXPIRED`, `CLOSED_MANUAL_TP`, `CLOSED_MANUAL_CL`.
   - Tracker menggunakan interval adaptif (`Min1` / `Min5` / `Min15`) dan live ticker `lastPrice` sehingga perubahan Entry, SL, dan TP pada posisi `LONG` maupun `SHORT` tetap akurat bahkan saat harga bergerak cepat antar siklus cek (min 15 detik).
 - **Audit Snapshot Setting per Scan Run (`scan_runs.settings_snapshot`):** Setiap eksekusi scan merekam snapshot lengkap strategi beserta `strategy_timeframes` (`HTF/LTF`, `kline_limit`, `expiry_hours` tiap strategi), filter ATR/volume, dan konfigurasi AI yang dipakai untuk diaudit di modal **Detail Evaluasi**.
-- **Dashboard & Chart TradingView Lightweight Charts:** Menampilkan Candlestick, histogram **Volume**, overlay **EMA 21/50/200**, panel **DSS Bressert (`10 9 5 80 20 60`)** tersinkronisasi, garis **Entry / SL / TP**, modal edit status/close manual, legend status, dan analitik performa per strategi.
+- **Dashboard, Menu Terpisah, & Chart TradingView Lightweight Charts (WIB):**
+  - Topbar dipisah menjadi **`Scanner`** (workspace default: Daftar Setup Trading, Riwayat Scan, Chart, & Detail Setup), **`Dashboard`** (ringkasan KPI termasuk keterangan `Active OPEN = OPEN + ENTRY_HIT` dan grafik performa per strategi), serta tautan terpisah **`Alur Scan ↗`** (`/flow`) di ujung kanan.
+  - Chart Candlestick + histogram **Volume** + overlay **EMA 21/50/200** + panel **DSS Bressert (`10 9 5 80 20 60`)** tersinkronisasi, **drag bebas** vertikal/horizontal (`Auto Fit` untuk reset), **zona waktu `Asia/Jakarta` (WIB)** di seluruh chart & UI, serta **presisi harga otomatis hingga `10` desimal** untuk koin bernilai kecil (`0.00000xxx`).
+  - Mendukung 3 mode visualisasi level: **`Mode Biasa`** (garis horizontal penuh), **`Kotak Setup`** (*view-only* kotak posisi Long/Short langsung dari Entry AI/Manual + SL + TP dengan *hover* R:R), dan **`Mode Gambar`** (gambar 1 kotak posisi kustom otomatis mengikuti arah setup, tombol `Dari Setup`, `Terapkan ke Taken`, dan hapus via tombol / `Delete`).
+  - Setiap setup menyimpan riwayat awal **`CREATED`** (acuan awal Entry/SL/TP dari sistem AI), estimasi **lama trade**, serta referensi **`Scan Run #...`** (klik nomor Run ID di tabel, riwayat scan, atau detail untuk membuka popup detail & *settings snapshot*).
 
 ---
 
@@ -90,26 +94,42 @@ Setelah aplikasi berjalan pada port default `8001`:
 
 | Layanan | URL Lokal | Keterangan |
 |---|---|---|
-| **Dashboard Web UI** | `http://127.0.0.1:8001` | Tabel setup, chart Candlestick/Volume/DSS Bressert, analitik, & pengaturan |
-| **Visualisasi Alur Scan** | `http://127.0.0.1:8001/flow` | Diagram interaktif alur data MEXC → Indikator → Strategi → AI → Risk Guard |
+| **Scanner & Dashboard UI** | `http://127.0.0.1:8001` | Tab **`Scanner`** (`#scanner`) untuk setup & chart; tab **`Dashboard`** (`#dashboard`) untuk KPI & performa strategi |
+| **Visualisasi Alur Scan** | `http://127.0.0.1:8001/flow` | Halaman terpisah (**`Alur Scan ↗`**): diagram interaktif alur data MEXC → Indikator → Strategi → AI → Risk Guard |
 | **Swagger API Docs** | `http://127.0.0.1:8001/docs` | Dokumentasi interaktif seluruh endpoint REST API |
 | **Health Check API** | `http://127.0.0.1:8001/api/health` | Status server, provider/model AI aktif, dan status scanner |
 
 ---
 
-## 4. Pengaturan di Dashboard & Manajemen Strategi
+## 4. Pengaturan di Dashboard, Navigasi Menu, & Manajemen Strategi
 
+### A. Navigasi Menu Utama
+- **`Scanner`** *(tampilan default)*: menampilkan **Daftar Setup Trading** (lengkap dengan estimasi **lama trade**, `HTF/LTF`, `Candles`, `Expiry`, dan tombol **`Run #...`** yang dapat diklik untuk membuka popup detail scan), **Riwayat Scan Terbaru**, **Chart Interaktif** (`Mode Biasa`, `Kotak Setup`, `Mode Gambar`), serta **Detail Setup** dengan referensi **`Scan Run #...` & *settings snapshot*** dan **Riwayat Kejadian & Status Setup** (dimulai dari event awal `CREATED`).
+- **`Dashboard`**: menampilkan kartu KPI (**Total Setups**, **Active OPEN** = gabungan setup berstatus `OPEN` + `ENTRY_HIT` yang masih aktif dipantau Tracker, **Win Rate**, **Avg R:R Ratio**) beserta grafik batang & ringkasan performa per strategi.
+- **`Alur Scan ↗`** *(terpisah di paling ujung kanan topbar)*: membuka halaman lain `/flow` untuk melihat alur scan dan audit prompt strategi.
+
+### B. Pengaturan Aplikasi (`Settings & AI Models`)
 1. Buka `http://127.0.0.1:8001` di browser, klik **Settings & AI Models**.
 2. Di tab **AI Provider & Models**: pilih provider (**Command Code AI**, **OpenRouter**, atau **Custom**), isi API Key, aktifkan model, lalu klik **Test Connection**.
 3. Di tab **Scanner, MEXC & Risk Guard**:
-   - Atur parameter global seperti **Mode Scanner (Auto/Manual)**, **Scan Interval**, **Tracker Interval**, **Top N Pairs**, serta **Pre-Filter & Risk Guard** (termasuk **Min/Max 24h Quote Volume** berformat pemisah ribuan untuk memfilter mega-cap atau membidik altcoin).
-   - Centang strategi pada **Active Strategies** lalu klik **Simpan Semua Pengaturan Scanner**. Timeframe (`HTF/LTF`), `Kline Limit`, dan `Setup Expiry` selalu mengikuti konfigurasi masing-masing strategi yang aktif.
-   - Di bagian **Kelola Strategi & Prompt Aturan AI (Tabel Database)**, Anda dapat menambah strategi baru (`+ Tambah Strategi Baru` secara manual atau melalui **Upload File JSON** hasil generator prompt), mengedit kode nama (mis. `_SWING`/`_SCALP`), prompt aturan, `min_rr`, serta mengatur `HTF`, `LTF`, `Candles`, `Expiry`, dan lama trade langsung pada tiap strategi.
+   > **Perubahan Parameter Global → Per-Strategi:** Parameter global **HTF Interval**, **LTF Interval**, **Kline Limit (Candles)**, dan **Setup Expiry (Jam)** telah **dihilangkan dari pengaturan global** karena tiap strategi punya kebutuhan timeframe, panjang candle indikator, dan durasi trade berbeda. Keempatnya kini diatur **per strategi** di tabel **Kelola Strategi & Prompt Aturan AI**.
 
-### Mengelola Setup & Evaluasi
-- Klik baris setup untuk melihat chart Candlestick + Volume + EMA 21/50/200 + **DSS Bressert (`10 9 5 80 20 60`)**.
-- Gunakan **Mark Taken**, **Skip**, atau **Edit Status / Close** (untuk ubah status, isi `manual_entry_price`, atau tutup manual `CLOSED_MANUAL_TP` / `CLOSED_MANUAL_CL`).
-- Klik ikon **`i`** di sebelah *Daftar Setup Trading* untuk melihat keterangan seluruh status, dan klik **Detail Evaluasi** di *Riwayat Scan* untuk melihat settingan snapshot scan serta hasil evaluasi setiap pair.
+   **Parameter Global yang Aktif di `app_settings`:**
+   - **Mode Scanner & Jadwal:** `Mode Scanner` (`Auto` / `Manual`), `Scan Interval (Menit)`, dan `Tracker Interval (Detik)` *(minimal `15` detik; background tracker berjalan otomatis di backend selama server hidup)*.
+   - **Market Scanner & Strategi:** `Top N Pairs` (`1–100`) dan checklist `Active Strategies` (diambil dari tabel `strategies` di MySQL).
+   - **MEXC Futures API & LLM Runtime:** `MEXC Base URL`, `MEXC Proxy URL (Opsional)`, `MEXC Concurrency`, `LLM Timeout (s)`, `LLM Concurrency`, dan `LLM Max Tokens` (`512–8192`, mencegah reservasi kredit berlebih di OpenRouter).
+   - **Pre-Filter & Risk Guard:** `Min 24h Quote Volume (USDT)`, `Max 24h Quote Volume (USDT)` (`0 = tanpa batas atas`), `Min ATR (%)`, `Max ATR (%)`, dan `Min AI Confidence (%)`.
+
+   **Pengaturan Per-Strategi (Tabel Database `strategies`):**
+   - Melalui **Kelola Strategi & Prompt Aturan AI**, Anda dapat menambah strategi baru (`+ Tambah Strategi Baru` atau **Import JSON**), mengubah kode nama (mis. `_SWING`/`_SCALP`), `trade_style`, estimasi **lama trade (`holding_period`)**, `HTF`, `LTF`, `Candles (suggested_kline_limit)`, `Setup Expiry (suggested_expiry_hours)`, `min_rr`, serta `prompt_text`.
+
+### C. Kontrol Chart, Mengelola Setup & Evaluasi
+- Klik baris setup di tabel untuk melihat chart Candlestick + Volume + EMA 21/50/200 + **DSS Bressert (`10 9 5 80 20 60`)** dalam waktu **WIB (`Asia/Jakarta`)** dan presisi harga otomatis hingga `10` desimal:
+  - **`Mode Biasa`**: drag bebas chart atas/bawah/kiri/kanan + garis horizontal penuh `ENTRY`, `STOP LOSS`, `TAKE PROFIT` (klik **`Auto Fit`** untuk pas-kan ulang skala).
+  - **`Kotak Setup`**: tampilan *view-only* kotak posisi Long/Short langsung dari Entry (AI/Manual), SL, dan TP setup (menggantikan garis penuh; arahkan kursor ke kotak untuk melihat **rasio R:R**).
+  - **`Mode Gambar`**: klik/drag di chart (atau klik **`↺ Dari Setup`**) untuk membuat 1 kotak posisi yang bisa digeser level Entry/SL/TP-nya (otomatis mengikuti arah LONG/SHORT setup), lalu klik **Terapkan ke Taken** untuk menyalin nilainya ke modal status, atau hapus lewat **`× Hapus (Del)`** / tombol keyboard **`Delete`**.
+- Gunakan **Mark Taken**, **Skip**, atau **Edit Status / Close** (untuk ubah status, isi `manual_entry_price`, sesuaikan SL/TP baru, atau tutup manual `CLOSED_MANUAL_TP` / `CLOSED_MANUAL_CL`).
+- Klik ikon **`i`** di sebelah *Daftar Setup Trading* untuk melihat Legend status, dan klik **Run ID (`Run #...` / `#...`)** atau **Detail Evaluasi** untuk membuka popup settingan snapshot scan & evaluasi tiap pair.
 
 ### Cara Kerja Outcome Tracker & Daftar 9 Status Setup
 Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomatis setiap `tracker_interval_seconds` (default `60` detik, minimum `15` detik; tetap berjalan walau mode Auto Scan diset ke Manual), dan bisa dijalankan kapan saja lewat tombol **Check Outcomes** (`POST /api/tracker/run`).
