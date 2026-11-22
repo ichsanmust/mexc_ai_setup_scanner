@@ -300,6 +300,7 @@ def test_dashboard_html_and_chart_endpoint(api_client, monkeypatch):
             "min_atr_pct": 0.4,
             "min_confidence": 80,
             "llm_timeout_seconds": 60,
+            "llm_max_tokens": 2048,
         },
     )
     assert upd_cfg.status_code == 200
@@ -314,6 +315,7 @@ def test_dashboard_html_and_chart_endpoint(api_client, monkeypatch):
     assert cfg_data["max_24h_quote_volume"] == 50_000_000
     assert cfg_data["min_confidence"] == 80
     assert cfg_data["llm_timeout_seconds"] == 60
+    assert cfg_data["llm_max_tokens"] == 2048
     assert "htf_interval" not in cfg_data
     assert "ltf_interval" not in cfg_data
 

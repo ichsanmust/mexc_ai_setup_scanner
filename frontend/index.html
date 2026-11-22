@@ -394,7 +394,7 @@
                 <button type="button" class="info-btn" data-info-title="MEXC Proxy URL" data-info="Opsional HTTP/SOCKS proxy (mis. http://127.0.0.1:7890) khusus untuk koneksi ke MEXC jika jaringan lokal membatasi akses langsung.">i</button>
               </label>
               <input id="cfg-mexc-proxy-url" type="text" placeholder="Kosongkan jika langsung" />
-              <div class="field-grid-3">
+              <div class="field-grid-2">
                 <div>
                   <label for="cfg-mexc-concurrency">
                     MEXC Concurrency
@@ -415,6 +415,13 @@
                     <button type="button" class="info-btn" data-info-title="LLM Concurrency" data-info="Jumlah panggilan AI paralel. Untuk model gratis (:free) sebaiknya 1–2 agar terhindar dari rate-limit 429; untuk model berbayar bisa 3–5.">i</button>
                   </label>
                   <input id="cfg-llm-concurrency" type="number" min="1" max="20" value="3" />
+                </div>
+                <div>
+                  <label for="cfg-llm-max-tokens">
+                    LLM Max Tokens
+                    <button type="button" class="info-btn" data-info-title="LLM Max Tokens (Output per Call)" data-info="Batas maksimal token output AI per panggilan (512–8192, default 1500). Penting di OpenRouter agar key tidak terkena error HTTP 402 akibat reservasi token default (65k–131k). Naikkan ke 2500–4000 jika memakai model reasoning/thinking.">i</button>
+                  </label>
+                  <input id="cfg-llm-max-tokens" type="number" min="512" max="8192" step="100" value="1500" />
                 </div>
               </div>
             </div>

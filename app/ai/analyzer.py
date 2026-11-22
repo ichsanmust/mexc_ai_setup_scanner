@@ -168,6 +168,7 @@ async def analyze_market_snapshot(
     llm_config: dict[str, str],
     client: Optional[httpx.AsyncClient] = None,
     timeout_seconds: Optional[int] = None,
+    max_tokens: Optional[int] = None,
     system_prompt: Optional[str] = None,
     db: Optional[Session] = None,
 ) -> tuple[AISetupDecision, dict[str, Any]]:
@@ -195,10 +196,12 @@ async def analyze_market_snapshot(
         f"MARKET SNAPSHOT:\n{json.dumps(snapshot, ensure_ascii=False)}"
     )
 
+    eff_max_tokens = max(512, min(8192, int(max_tokens if max_tokens is not None else settings.llm_max_tokens)))
     headers = _build_headers(provider, api_key)
     base_payload: dict[str, Any] = {
         "model": model_id,
         "temperature": 0.1,
+        "max_tokens": eff_max_tokens,
         "messages": [
             {"role": "system", "content": resolved_prompt},
             {"role": "user", "content": user_message},

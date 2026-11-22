@@ -388,6 +388,8 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
         _upsert_setting(db, "llm_timeout_seconds", str(body.llm_timeout_seconds))
     if body.llm_max_concurrency is not None:
         _upsert_setting(db, "llm_max_concurrency", str(body.llm_max_concurrency))
+    if body.llm_max_tokens is not None:
+        _upsert_setting(db, "llm_max_tokens", str(body.llm_max_tokens))
     if body.mexc_base_url is not None:
         _upsert_setting(db, "mexc_base_url", body.mexc_base_url.strip().rstrip("/"))
     if body.mexc_proxy_url is not None:

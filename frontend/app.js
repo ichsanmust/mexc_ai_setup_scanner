@@ -304,7 +304,7 @@ async function openScanEvaluationsModal(runId) {
         <div class="eval-settings-box">
           <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
           <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</code></div>
-          <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"}</div>
+          <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
         </div>`
       : `<div><strong>Strategi:</strong> <code>${escapeHtml(stratLabel)}</code> <span class="subtitle-sm">(scan lama sebelum pencatatan snapshot setting)</span></div>`;
     const setupNames = (data.setups || []).map((s) => `${s.symbol} (${s.decision} ${s.strategy_used})`).join(", ");
@@ -1277,6 +1277,7 @@ async function loadAIModalData(syncFilterToActiveProvider = false) {
   document.getElementById("cfg-mexc-concurrency").value = scannerCfg.mexc_max_concurrency;
   document.getElementById("cfg-llm-timeout").value = scannerCfg.llm_timeout_seconds;
   document.getElementById("cfg-llm-concurrency").value = scannerCfg.llm_max_concurrency;
+  document.getElementById("cfg-llm-max-tokens").value = scannerCfg.llm_max_tokens ?? 1500;
   setGroupedNumberValue("cfg-min-vol", "cfg-min-vol-hint", scannerCfg.min_24h_quote_volume, false);
   setGroupedNumberValue("cfg-max-vol", "cfg-max-vol-hint", scannerCfg.max_24h_quote_volume, true);
   document.getElementById("cfg-min-confidence").value = scannerCfg.min_confidence;
@@ -1504,6 +1505,7 @@ async function saveScannerSettings() {
     mexc_max_concurrency: parseNumField("cfg-mexc-concurrency"),
     llm_timeout_seconds: parseNumField("cfg-llm-timeout"),
     llm_max_concurrency: parseNumField("cfg-llm-concurrency"),
+    llm_max_tokens: parseNumField("cfg-llm-max-tokens"),
     min_24h_quote_volume: minVol,
     max_24h_quote_volume: maxVol,
     min_confidence: parseNumField("cfg-min-confidence"),

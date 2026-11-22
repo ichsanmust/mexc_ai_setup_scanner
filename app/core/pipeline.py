@@ -103,6 +103,7 @@ class ScanPipeline:
                 "llm_model": llm_cfg["model_id"],
                 "llm_timeout_seconds": rt_cfg["llm_timeout_seconds"],
                 "llm_max_concurrency": rt_cfg["llm_max_concurrency"],
+                "llm_max_tokens": rt_cfg["llm_max_tokens"],
             }
 
             scan_run = ScanRun(
@@ -276,7 +277,9 @@ class ScanPipeline:
         db.commit()
 
         prompt_map = load_strategy_prompts_map(db, strategies)
-        accepts_system_prompt = "system_prompt" in inspect.signature(analyze_market_snapshot).parameters
+        ai_params = inspect.signature(analyze_market_snapshot).parameters
+        accepts_system_prompt = "system_prompt" in ai_params
+        accepts_max_tokens = "max_tokens" in ai_params
 
         llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
 
@@ -289,6 +292,8 @@ class ScanPipeline:
                         "llm_config": llm_cfg,
                         "timeout_seconds": rt_cfg["llm_timeout_seconds"],
                     }
+                    if accepts_max_tokens:
+                        kwargs["max_tokens"] = rt_cfg["llm_max_tokens"]
                     if accepts_system_prompt:
                         kwargs["system_prompt"] = prompt_map.get(strat.strip().upper())
                     decision, raw_resp = await analyze_market_snapshot(**kwargs)

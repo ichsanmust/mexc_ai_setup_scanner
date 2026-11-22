@@ -159,6 +159,7 @@ INSERT IGNORE INTO `app_settings` (`key`, `value`, `description`) VALUES
 ('active_model_id', 'google/gemini-2.5-flash', 'Model ID AI aktif yang digunakan untuk analisis setup'),
 ('llm_timeout_seconds', '45', 'Timeout request LLM dalam detik'),
 ('llm_max_concurrency', '3', 'Maksimum request paralel ke LLM'),
+('llm_max_tokens', '1500', 'Maksimum output token AI per panggilan (512-8192; mengontrol reservasi kredit OpenRouter)'),
 ('mexc_base_url', 'https://contract.mexc.com', 'Base URL public REST MEXC Futures'),
 ('mexc_proxy_url', '', 'Proxy opsional untuk request MEXC'),
 ('mexc_max_concurrency', '5', 'Maksimum request paralel ke MEXC'),

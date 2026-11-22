@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     llm_timeout_seconds: int = 45
     llm_max_concurrency: int = 3
+    llm_max_tokens: int = 1500
 
     # MEXC Public Futures API
     mexc_base_url: str = "https://contract.mexc.com"

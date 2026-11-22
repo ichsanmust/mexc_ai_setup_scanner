@@ -312,6 +312,7 @@ class ScannerSettingsOut(BaseModel):
 
     llm_timeout_seconds: int
     llm_max_concurrency: int
+    llm_max_tokens: int = 1500
     mexc_base_url: str
     mexc_proxy_url: str
     mexc_max_concurrency: int
@@ -333,6 +334,7 @@ class ScannerSettingsUpdate(BaseModel):
 
     llm_timeout_seconds: Optional[int] = Field(default=None, ge=5, le=300)
     llm_max_concurrency: Optional[int] = Field(default=None, ge=1, le=20)
+    llm_max_tokens: Optional[int] = Field(default=None, ge=512, le=8192)
     mexc_base_url: Optional[str] = Field(default=None, min_length=8, max_length=300)
     mexc_proxy_url: Optional[str] = Field(default=None, max_length=300)
     mexc_max_concurrency: Optional[int] = Field(default=None, ge=1, le=20)

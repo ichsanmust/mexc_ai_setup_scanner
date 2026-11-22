@@ -229,6 +229,12 @@ def seed_all(db: Session) -> None:
     )
     _upsert_default_setting(
         db,
+        "llm_max_tokens",
+        str(settings.llm_max_tokens),
+        "Maksimum output token AI per panggilan (512-8192; mengontrol reservasi kredit OpenRouter)",
+    )
+    _upsert_default_setting(
+        db,
         "mexc_base_url",
         settings.mexc_base_url,
         "Base URL public REST MEXC Futures",

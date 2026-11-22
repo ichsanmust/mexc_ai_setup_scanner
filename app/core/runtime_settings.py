@@ -10,6 +10,7 @@ from ..models import AppSetting, Strategy
 RUNTIME_SETTING_KEYS = [
     "llm_timeout_seconds",
     "llm_max_concurrency",
+    "llm_max_tokens",
     "mexc_base_url",
     "mexc_proxy_url",
     "mexc_max_concurrency",
@@ -82,6 +83,7 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
     return {
         "llm_timeout_seconds": _parse_int(rows.get("llm_timeout_seconds"), settings.llm_timeout_seconds, 5, 300),
         "llm_max_concurrency": _parse_int(rows.get("llm_max_concurrency"), settings.llm_max_concurrency, 1, 20),
+        "llm_max_tokens": _parse_int(rows.get("llm_max_tokens"), settings.llm_max_tokens, 512, 8192),
         "mexc_base_url": mexc_base_url,
         "mexc_proxy_url": mexc_proxy_url,
         "mexc_max_concurrency": _parse_int(rows.get("mexc_max_concurrency"), settings.mexc_max_concurrency, 1, 20),

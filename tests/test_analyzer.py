@@ -37,10 +37,12 @@ def test_resolve_active_llm_config_switches_between_providers(db_session):
 @pytest.mark.asyncio
 async def test_analyze_market_snapshot_parses_json_with_fallback():
     calls = []
+    max_tokens_seen = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         calls.append(body.get("response_format"))
+        max_tokens_seen.append(body.get("max_tokens"))
         # Simulate provider rejecting strict json_schema on 1st call, accepting json_object on 2nd
         if body.get("response_format", {}).get("type") == "json_schema":
             return httpx.Response(400, json={"error": "json_schema unsupported"})
@@ -87,9 +89,27 @@ async def test_analyze_market_snapshot_parses_json_with_fallback():
         )
 
     assert len(calls) == 2
+    assert all(mt == 1500 for mt in max_tokens_seen)
     assert decision.decision == "LONG"
     assert decision.confidence == 84
     assert decision.take_profit == 97500.0
+
+    # Custom max_tokens override (e.g. from app_settings.llm_max_tokens)
+    max_tokens_seen.clear()
+    async with httpx.AsyncClient(transport=transport) as client:
+        await analyze_market_snapshot(
+            snapshot={"symbol": "BTC_USDT", "ltf_15m": {"close": 95000}},
+            strategy="BREAKOUT_MOMENTUM",
+            llm_config={
+                "provider": "commandcode",
+                "base_url": "https://api.commandcode.ai/provider/v1/chat/completions",
+                "api_key": "test-key",
+                "model_id": "google/gemini-2.5-flash",
+            },
+            client=client,
+            max_tokens=2048,
+        )
+    assert all(mt == 2048 for mt in max_tokens_seen)
 
 
 @pytest.mark.asyncio
