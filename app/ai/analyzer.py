@@ -184,8 +184,13 @@ async def analyze_market_snapshot(
 
     resolved_prompt = system_prompt if system_prompt is not None else load_strategy_prompt(strategy, db=db)
     schema_json_str = json.dumps(AISetupDecision.model_json_schema(), ensure_ascii=False)
+    htf_iv = (snapshot.get("htf_1h") or {}).get("interval", "HTF")
+    ltf_iv = (snapshot.get("ltf_15m") or {}).get("interval", "LTF")
     user_message = (
         f"Evaluasi snapshot market MEXC Futures berikut untuk strategi {strategy}.\n"
+        f"Catatan Struktur Snapshot: key 'htf_1h' berisi ringkasan Higher Timeframe aktual ({htf_iv}) "
+        f"dan key 'ltf_15m' berisi ringkasan Lower Timeframe aktual ({ltf_iv}); selalu rujuk field 'interval' aktual tersebut. "
+        f"Potensi squeeze/crowding dinilai dari funding_rate + open_interest_hold_vol (tanpa feed likuidasi terpisah).\n"
         f"Kembalikan HANYA JSON valid sesuai schema ini:\n{schema_json_str}\n\n"
         f"MARKET SNAPSHOT:\n{json.dumps(snapshot, ensure_ascii=False)}"
     )

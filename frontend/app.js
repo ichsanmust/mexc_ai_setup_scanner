@@ -219,6 +219,22 @@ function renderScanRuns(scannerStatus) {
   meta.textContent = `Mode: ${modeText} • Top ${scannerStatus.top_n_pairs} Pairs • MEXC: ${scannerStatus.mexc_base_url || "-"}`;
 }
 
+function formatStrategyProfilesSummary(cfg, fallbackStrategy = "") {
+  const tfMap = cfg && cfg.strategy_timeframes && typeof cfg.strategy_timeframes === "object"
+    ? cfg.strategy_timeframes
+    : null;
+  if (tfMap && Object.keys(tfMap).length) {
+    return Object.entries(tfMap)
+      .map(([name, p]) => `${name} (${p.htf || "-"}/${p.ltf || "-"} • ${p.kline_limit || "-"}b • ${p.expiry_hours || "-"}j)`)
+      .join(", ");
+  }
+  if (cfg && (cfg.htf_interval || cfg.ltf_interval)) {
+    const strats = (cfg.active_strategies || []).join(", ") || fallbackStrategy || "-";
+    return `${cfg.htf_interval || "-"} / ${cfg.ltf_interval || "-"} • Candles ${cfg.kline_limit || "-"} • ${strats}`;
+  }
+  return (cfg && Array.isArray(cfg.active_strategies) && cfg.active_strategies.join(", ")) || fallbackStrategy || "-";
+}
+
 function renderScanRunsList(runs) {
   const list = document.getElementById("scan-runs-list");
   if (!runs.length) {
@@ -242,7 +258,7 @@ function renderScanRunsList(runs) {
         : `<span></span>`;
       const cfg = r.settings_snapshot || null;
       const cfgLine = cfg
-        ? `<div class="subtitle-sm">${escapeHtml(cfg.htf_interval || "-")} / ${escapeHtml(cfg.ltf_interval || "-")} &bull; Candles ${cfg.kline_limit || "-"} &bull; ${escapeHtml((cfg.active_strategies || []).join(", ") || r.strategy)}</div>`
+        ? `<div class="subtitle-sm">${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</div>`
         : `<div class="subtitle-sm">Strategi: ${escapeHtml(r.strategy || "-")}</div>`;
       return `
         <div class="scan-run-chip ${cls}">
@@ -286,8 +302,8 @@ async function openScanEvaluationsModal(runId) {
     const settingsHtml = cfg
       ? `
         <div class="eval-settings-box">
-          <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
-          <div><strong>Timeframe &amp; Pair:</strong> HTF <code>${escapeHtml(cfg.htf_interval || "-")}</code> / LTF <code>${escapeHtml(cfg.ltf_interval || "-")}</code> &bull; Candles: <b>${cfg.kline_limit ?? "-"}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Expiry: <b>${cfg.setup_expiry_hours ?? "-"}j</b></div>
+          <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
+          <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</code></div>
           <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"}</div>
         </div>`
       : `<div><strong>Strategi:</strong> <code>${escapeHtml(stratLabel)}</code> <span class="subtitle-sm">(scan lama sebelum pencatatan snapshot setting)</span></div>`;
@@ -985,7 +1001,6 @@ function renderStrategySettingsUI(activeList = null) {
         <td><code>${Number(s.min_rr).toFixed(2)}</code></td>
         <td>${s.is_active ? '<span class="badge badge-hit-tp">ACTIVE</span>' : '<span class="badge badge-neutral">Inactive</span>'}</td>
         <td>
-          <button type="button" class="btn btn-secondary btn-sm" data-strat-act="apply" data-id="${s.id}" title="Isi HTF, LTF, Kline Limit & Expiry ke form setting di atas">Pakai Sugesti</button>
           <button type="button" class="btn btn-secondary btn-sm" data-strat-act="toggle" data-id="${s.id}">${s.is_active ? "Nonaktifkan" : "Aktifkan"}</button>
           <button type="button" class="btn btn-primary btn-sm" data-strat-act="edit" data-id="${s.id}">Edit</button>
           ${s.is_builtin ? "" : `<button type="button" class="btn btn-danger btn-sm" data-strat-act="delete" data-id="${s.id}">Hapus</button>`}
@@ -1000,15 +1015,7 @@ function renderStrategySettingsUI(activeList = null) {
       const act = btn.dataset.stratAct;
       const target = state.strategies.find((x) => x.id === id);
       try {
-        if (act === "apply" && target) {
-          if (target.suggested_htf) document.getElementById("cfg-htf-interval").value = target.suggested_htf;
-          if (target.suggested_ltf) document.getElementById("cfg-ltf-interval").value = target.suggested_ltf;
-          if (target.suggested_kline_limit) document.getElementById("cfg-kline-limit").value = target.suggested_kline_limit;
-          if (target.suggested_expiry_hours) document.getElementById("cfg-setup-expiry").value = target.suggested_expiry_hours;
-          showToast(
-            `Sugesti ${target.name} diterapkan ke form (${target.suggested_htf}/${target.suggested_ltf}, ${target.suggested_expiry_hours || 12}j). Klik Simpan Pengaturan Scanner untuk menyimpan.`
-          );
-        } else if (act === "toggle") {
+        if (act === "toggle") {
           const updated = await apiRequest(`/api/strategies/${id}/toggle`, { method: "POST" });
           showToast(`${updated.name}: ${updated.is_active ? "AKTIF" : "NONAKTIF"}`);
           await Promise.all([loadAIModalData(false), loadAnalytics()]);
@@ -1264,11 +1271,7 @@ async function loadAIModalData(syncFilterToActiveProvider = false) {
   document.getElementById("cfg-scan-interval").value = scannerCfg.scan_interval_minutes;
   syncScanIntervalState();
   document.getElementById("cfg-tracker-interval").value = scannerCfg.tracker_interval_seconds;
-  document.getElementById("cfg-setup-expiry").value = scannerCfg.setup_expiry_hours;
   document.getElementById("cfg-top-n-pairs").value = scannerCfg.top_n_pairs;
-  document.getElementById("cfg-kline-limit").value = scannerCfg.kline_limit;
-  document.getElementById("cfg-htf-interval").value = scannerCfg.htf_interval;
-  document.getElementById("cfg-ltf-interval").value = scannerCfg.ltf_interval;
   document.getElementById("cfg-mexc-base-url").value = scannerCfg.mexc_base_url || "";
   document.getElementById("cfg-mexc-proxy-url").value = scannerCfg.mexc_proxy_url || "";
   document.getElementById("cfg-mexc-concurrency").value = scannerCfg.mexc_max_concurrency;
@@ -1494,11 +1497,7 @@ async function saveScannerSettings() {
     auto_scan_enabled: autoScan,
     scan_interval_minutes: parseNumField("cfg-scan-interval"),
     tracker_interval_seconds: parseNumField("cfg-tracker-interval"),
-    setup_expiry_hours: parseNumField("cfg-setup-expiry"),
     top_n_pairs: parseNumField("cfg-top-n-pairs"),
-    kline_limit: parseNumField("cfg-kline-limit"),
-    htf_interval: document.getElementById("cfg-htf-interval").value,
-    ltf_interval: document.getElementById("cfg-ltf-interval").value,
     active_strategies: activeStrategies,
     mexc_base_url: document.getElementById("cfg-mexc-base-url").value.trim(),
     mexc_proxy_url: document.getElementById("cfg-mexc-proxy-url").value.trim(),

@@ -76,6 +76,13 @@ def test_prefilter_rejects_low_volatility_and_accepts_healthy_pair():
     assert snap is not None
     assert snap["symbol"] == "BTC_USDT"
     assert snap["ltf_15m"]["nearest_support"] < snap["ltf_15m"]["close"]
+    assert 0.0 <= snap["htf_1h"]["dss"] <= 100.0
+    assert 0.0 <= snap["ltf_15m"]["dss_signal"] <= 100.0
+    assert "prev_dss" in snap["ltf_15m"]
+    last_candle = snap["ltf_15m"]["recent_candles"][-1]
+    assert last_candle["volume"] > 0.0
+    assert isinstance(last_candle["is_bullish"], bool)
+    assert last_candle["direction"] in ("BULLISH", "BEARISH")
 
     # Force dead market rejection
     dead_ok, dead_reason, _ = prefilter_and_build_snapshot(

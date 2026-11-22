@@ -123,7 +123,7 @@ class TradeSetup(Base):
         nullable=True,
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    strategy_used: Mapped[str] = mapped_column(String(40), nullable=False)
+    strategy_used: Mapped[str] = mapped_column(String(64), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
     market_regime: Mapped[str] = mapped_column(String(32), nullable=False)
     entry_type: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -159,6 +159,7 @@ class TradeSetup(Base):
         Index("idx_trade_setups_symbol_status", "symbol", "status"),
         Index("idx_trade_setups_created_at", "created_at"),
         Index("idx_trade_setups_strategy_status", "strategy_used", "status"),
+        Index("idx_trade_setups_dup_lookup", "symbol", "decision", "strategy_used", "status"),
     )
 
 
@@ -174,7 +175,7 @@ class ScanEvaluation(Base):
         nullable=False,
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    strategy_used: Mapped[str] = mapped_column(String(40), nullable=False)
+    strategy_used: Mapped[str] = mapped_column(String(64), nullable=False)
     raw_decision: Mapped[str] = mapped_column(String(16), nullable=False)
     rejection_reason: Mapped[str] = mapped_column(String(255), nullable=False)
     confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)

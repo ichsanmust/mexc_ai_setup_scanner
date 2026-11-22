@@ -294,8 +294,6 @@ def test_dashboard_html_and_chart_endpoint(api_client, monkeypatch):
             "scan_interval_minutes": 30,
             "top_n_pairs": 12,
             "mexc_base_url": "https://contract.mexc.fm",
-            "htf_interval": "Hour4",
-            "ltf_interval": "Min15",
             "active_strategies": ["TREND_PULLBACK"],
             "min_24h_quote_volume": 2_000_000,
             "max_24h_quote_volume": 50_000_000,
@@ -311,12 +309,13 @@ def test_dashboard_html_and_chart_endpoint(api_client, monkeypatch):
     assert cfg_data["scan_interval_minutes"] == 30
     assert cfg_data["top_n_pairs"] == 12
     assert cfg_data["mexc_base_url"] == "https://contract.mexc.fm"
-    assert cfg_data["htf_interval"] == "Hour4"
     assert cfg_data["active_strategies"] == ["TREND_PULLBACK"]
     assert cfg_data["min_24h_quote_volume"] == 2_000_000
     assert cfg_data["max_24h_quote_volume"] == 50_000_000
     assert cfg_data["min_confidence"] == 80
     assert cfg_data["llm_timeout_seconds"] == 60
+    assert "htf_interval" not in cfg_data
+    assert "ltf_interval" not in cfg_data
 
     bad_vol = api_client.post(
         "/api/scanner/settings",

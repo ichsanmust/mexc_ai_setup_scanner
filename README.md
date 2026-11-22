@@ -6,10 +6,11 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
 
 ## Fitur Utama
 
-- **Public Market Data Only:** Mengambil kontrak USDT-M aktif, ticker 24 jam, funding rate, open interest, dan candlestick multi-timeframe (`HTF` & `LTF`) dari `https://contract.mexc.com/api/v1/contract/...`.
-- **Deterministic Feature Builder:** Menghitung EMA 21, EMA 50, EMA 200, RSI 14, ATR 14, Volume MA20 & volume ratio, compression ratio, DSS Bressert (`10 9 5 80 20 60`), serta deteksi `recent_swing_high`, `recent_swing_low`, `nearest_support`, dan `nearest_resistance`.
+- **Public Market Data Only:** Mengambil kontrak USDT-M aktif, ticker 24 jam (`lastPrice`, `fairPrice`, `indexPrice`, `fundingRate`, `holdVol`, dll.), dan candlestick multi-timeframe (`HTF` & `LTF`) dari `https://contract.mexc.com/api/v1/contract/...`. *(Catatan: MEXC public REST tidak menyediakan feed likuidasi; crowding/potensi squeeze dievaluasi dari `funding_rate` + `open_interest_hold_vol`.)*
+- **Deterministic Feature Builder:** Menghitung EMA 21, EMA 50, EMA 200, RSI 14, `prev_rsi14`, ATR 14, Volume MA20 & volume ratio, compression ratio, **DSS Bressert (`10 9 5`, meliputi `dss`, `prev_dss`, `dss_signal`)**, ringkasan 3 candle terakhir (`recent_candles`: `open`, `high`, `low`, `close`, `volume`, `is_bullish`, `direction`, `body_pct`, `upper_wick_pct`, `lower_wick_pct`), serta deteksi `recent_swing_high`, `recent_swing_low`, `nearest_support`, dan `nearest_resistance`.
+- **Per-Strategy Timeframe, Candles & Expiry:** Setiap strategi aktif (baik 1 maupun multi-strategi) otomatis memakai `suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, dan `suggested_expiry_hours` masing-masing dari tabel `strategies` (penarikan kline MEXC terdeduplikasi per `(symbol, interval)` agar hemat request). Setting global hanya mengatur **Mode Auto/Manual**, **Scan/Tracker Interval**, **Top N Pairs**, filter **Volume/ATR%/Confidence**, serta runtime **MEXC/LLM**.
 - **Strategy Registry di MySQL (`strategies`):**
-  - Menyimpan nama/kode strategi (bisa diedit mis. akhiran `_SWING`, `_INTRADAY`, `_SCALP`), tipe trading (`trade_style`), estimasi lama trade (`holding_period`), sugesti setting (`suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, `suggested_expiry_hours`), minimum R:R (`min_rr`), toggle aktif/nonaktif (`is_active`), dan isi `prompt_text`.
+  - Menyimpan nama/kode strategi (bisa diedit mis. akhiran `_SWING`, `_INTRADAY`, `_SCALP`), tipe trading (`trade_style`), estimasi lama trade (`holding_period`), konfigurasi scan per strategi (`suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, `suggested_expiry_hours`), minimum R:R (`min_rr`), toggle aktif/nonaktif (`is_active`), dan isi `prompt_text`.
   - Bawaan awal (auto-seeded dari `prompts/*.txt`):
     - `TREND_PULLBACK` (`INTRADAY`, 4–24 Jam, HTF `Min60` / LTF `Min15`, min R:R `1.8`)
     - `BREAKOUT_MOMENTUM` (`INTRADAY_SWING`, 4–48 Jam, HTF `Min60` / LTF `Min15`, min R:R `2.0`)
@@ -18,7 +19,7 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
 - **Outcome Tracker Adaptif & Manajemen Status Lengkap:**
   - Mendukung 9 status: `OPEN`, `ENTRY_HIT`, `MANUAL_TAKEN`, `MANUAL_SKIPPED`, `HIT_TP`, `HIT_SL`, `EXPIRED`, `CLOSED_MANUAL_TP`, `CLOSED_MANUAL_CL`.
   - Tracker menggunakan interval adaptif (`Min1` / `Min5` / `Min15`) dan live ticker `lastPrice` sehingga perubahan Entry, SL, dan TP pada posisi `LONG` maupun `SHORT` tetap akurat bahkan saat harga bergerak cepat antar siklus cek (min 15 detik).
-- **Audit Snapshot Setting per Scan Run (`scan_runs.settings_snapshot`):** Setiap eksekusi scan merekam snapshot lengkap strategi, HTF/LTF, candle limit, filter ATR/volume, dan konfigurasi AI yang dipakai untuk diaudit di modal **Detail Evaluasi**.
+- **Audit Snapshot Setting per Scan Run (`scan_runs.settings_snapshot`):** Setiap eksekusi scan merekam snapshot lengkap strategi beserta `strategy_timeframes` (`HTF/LTF`, `kline_limit`, `expiry_hours` tiap strategi), filter ATR/volume, dan konfigurasi AI yang dipakai untuk diaudit di modal **Detail Evaluasi**.
 - **Dashboard & Chart TradingView Lightweight Charts:** Menampilkan Candlestick, histogram **Volume**, overlay **EMA 21/50/200**, panel **DSS Bressert (`10 9 5 80 20 60`)** tersinkronisasi, garis **Entry / SL / TP**, modal edit status/close manual, legend status, dan analitik performa per strategi.
 
 ---
@@ -90,6 +91,7 @@ Setelah aplikasi berjalan pada port default `8001`:
 | Layanan | URL Lokal | Keterangan |
 |---|---|---|
 | **Dashboard Web UI** | `http://127.0.0.1:8001` | Tabel setup, chart Candlestick/Volume/DSS Bressert, analitik, & pengaturan |
+| **Visualisasi Alur Scan** | `http://127.0.0.1:8001/flow` | Diagram interaktif alur data MEXC → Indikator → Strategi → AI → Risk Guard |
 | **Swagger API Docs** | `http://127.0.0.1:8001/docs` | Dokumentasi interaktif seluruh endpoint REST API |
 | **Health Check API** | `http://127.0.0.1:8001/api/health` | Status server, provider/model AI aktif, dan status scanner |
 
@@ -100,9 +102,9 @@ Setelah aplikasi berjalan pada port default `8001`:
 1. Buka `http://127.0.0.1:8001` di browser, klik **Settings & AI Models**.
 2. Di tab **AI Provider & Models**: pilih provider (**Command Code AI**, **OpenRouter**, atau **Custom**), isi API Key, aktifkan model, lalu klik **Test Connection**.
 3. Di tab **Scanner, MEXC & Risk Guard**:
-   - Atur **Mode Scanner (Auto/Manual)**, **Scan Interval**, **Tracker Interval**, **Setup Expiry**, **Top N Pairs**, **Kline Limit (60–500)**, **HTF/LTF Interval**, serta **Pre-Filter & Risk Guard** (termasuk **Min/Max 24h Quote Volume** berformat pemisah ribuan untuk memfilter mega-cap atau membidik altcoin).
-   - Centang strategi pada **Active Strategies** lalu klik **Simpan Semua Pengaturan Scanner**.
-   - Di bagian **Kelola Strategi & Prompt Aturan AI (Tabel Database)**, Anda dapat menambah strategi baru (`+ Tambah Strategi Baru`), mengedit kode nama (mis. `_SWING`/`_SCALP`), prompt aturan, `min_rr`, sugesti HTF/LTF/Candles/Expiry, lama trade, atau menekan **Pakai Sugesti** untuk langsung mengisi form setting scanner.
+   - Atur parameter global seperti **Mode Scanner (Auto/Manual)**, **Scan Interval**, **Tracker Interval**, **Top N Pairs**, serta **Pre-Filter & Risk Guard** (termasuk **Min/Max 24h Quote Volume** berformat pemisah ribuan untuk memfilter mega-cap atau membidik altcoin).
+   - Centang strategi pada **Active Strategies** lalu klik **Simpan Semua Pengaturan Scanner**. Timeframe (`HTF/LTF`), `Kline Limit`, dan `Setup Expiry` selalu mengikuti konfigurasi masing-masing strategi yang aktif.
+   - Di bagian **Kelola Strategi & Prompt Aturan AI (Tabel Database)**, Anda dapat menambah strategi baru (`+ Tambah Strategi Baru` secara manual atau melalui **Upload File JSON** hasil generator prompt), mengedit kode nama (mis. `_SWING`/`_SCALP`), prompt aturan, `min_rr`, serta mengatur `HTF`, `LTF`, `Candles`, `Expiry`, dan lama trade langsung pada tiap strategi.
 
 ### Mengelola Setup & Evaluasi
 - Klik baris setup untuk melihat chart Candlestick + Volume + EMA 21/50/200 + **DSS Bressert (`10 9 5 80 20 60`)**.
@@ -195,7 +197,7 @@ ATURAN EVALUASI KETAT:
 
 ## 6. Template Prompt Generator untuk Membuat Strategi Baru
 
-Jika Anda ingin meminta AI (ChatGPT / Claude / Gemini) merancang strategi baru agar formatnya **100% kompatibel** dengan tabel `strategies` dan form UI aplikasi ini (termasuk sugesti HTF/LTF/Expiry/Lama Trade dan indikator yang tersedia di `MARKET SNAPSHOT`), gunakan template prompt berikut dan ganti bagian `[IDE STRATEGI ANDA]`:
+Jika Anda ingin meminta AI (ChatGPT / Claude / Gemini) merancang strategi baru agar formatnya **100% kompatibel** dengan tabel `strategies` dan form UI aplikasi ini (termasuk setting per strategi `HTF`/`LTF`/`Candles`/`Expiry`/Lama Trade dan indikator yang tersedia di `MARKET SNAPSHOT`), gunakan template prompt berikut dan ganti bagian `[IDE STRATEGI ANDA]`:
 
 ```text
 Buatkan definisi strategi trading Crypto Futures baru untuk sistem "MEXC AI Setup Scanner" saya berdasarkan ide berikut:
@@ -219,8 +221,8 @@ Kembalikan output HANYA 1 blok JSON valid (tanpa teks tambahan di luar JSON) per
 
 ATURAN WAJIB UNTUK ISI "prompt_text":
 1. Hanya gunakan data indikator yang benar-benar ada di MARKET SNAPSHOT sistem saya:
-   - market_ticker: last_price, fair_price, index_price, change_24h_pct, quote_volume_24h, funding_rate, open_interest_hold_vol, high_24h, low_24h.
-   - htf_1h & ltf_15m: interval, bars_count, close, ema21, ema50, ema200, ema_bias (BULLISH_ALIGNED / BEARISH_ALIGNED / FLAT_RANGING / MIXED), dist_to_ema21_pct, dist_to_ema50_pct, dist_to_ema200_pct, rsi14, prev_rsi14, atr14, atr_pct, vol_ma20, current_volume, volume_ratio, compression_ratio, recent_swing_high, recent_swing_low, nearest_support, nearest_resistance, dist_to_support_pct, dist_to_resistance_pct, recent_candles (open, high, low, close, volume, body_pct, upper_wick_pct, lower_wick_pct, is_bullish).
+   - market_ticker: last_price, fair_price, index_price, change_24h_pct, quote_volume_24h, funding_rate, open_interest_hold_vol, high_24h, low_24h. *(Catatan: tidak ada feed likuidasi terpisah; gunakan funding_rate + open_interest_hold_vol sebagai proksi squeeze/crowding).*
+   - htf_1h (container Higher Timeframe sesuai field "interval") & ltf_15m (container Lower Timeframe sesuai field "interval"): interval, bars_count, close, ema21, ema50, ema200, ema_bias (BULLISH_ALIGNED / BEARISH_ALIGNED / FLAT_RANGING / MIXED), dist_to_ema21_pct, dist_to_ema50_pct, dist_to_ema200_pct, rsi14, prev_rsi14, dss, prev_dss, dss_signal, atr14, atr_pct, vol_ma20, current_volume, volume_ratio, compression_ratio, recent_swing_high, recent_swing_low, nearest_support, nearest_resistance, dist_to_support_pct, dist_to_resistance_pct, recent_candles (open, high, low, close, volume, is_bullish, direction, body_pct, upper_wick_pct, lower_wick_pct).
 2. Buat aturan evaluasi bernomor yang ketat: kondisi tren HTF, syarat pemicu di LTF, aturan penentuan Entry, Stop Loss (menggunakan struktur swing + buffer ATR), Take Profit (resistance/support atau proyeksi range), dan syarat minimum R:R sesuai field "min_rr".
 3. Sertakan aturan disiplin NO_TRADE jika struktur lemah, HTF/LTF konflik, R:R kurang dari minimum, atau confidence < 75.
 4. Akhiri "prompt_text" dengan instruksi wajib:

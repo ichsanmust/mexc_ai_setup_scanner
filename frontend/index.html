@@ -24,6 +24,7 @@
         <span class="dot"></span>
         <span id="active-llm-label">Loading AI...</span>
       </div>
+      <a href="/flow" class="btn btn-secondary" style="text-decoration:none;">Alur Scan</a>
       <button id="btn-open-ai-modal" class="btn btn-secondary">Settings &amp; AI Models</button>
       <button id="btn-run-tracker" class="btn btn-secondary">Check Outcomes</button>
       <button id="btn-run-scan" class="btn btn-primary">Run Scan Now</button>
@@ -353,13 +354,6 @@
                   </label>
                   <input id="cfg-tracker-interval" type="number" min="15" max="3600" value="60" />
                 </div>
-                <div>
-                  <label for="cfg-setup-expiry">
-                    Setup Expiry (Jam)
-                    <button type="button" class="info-btn" data-info-title="Setup Expiry (Jam)" data-info="Batas waktu maksimal sebuah setup berstatus OPEN. Jika melewati durasi ini harga belum menyentuh TP maupun SL, status otomatis menjadi EXPIRED.">i</button>
-                  </label>
-                  <input id="cfg-setup-expiry" type="number" min="1" max="168" value="12" />
-                </div>
               </div>
             </div>
           </div>
@@ -368,51 +362,19 @@
             <div class="settings-card">
               <h4>
                 Market Scanner &amp; Strategi
-                <button type="button" class="info-btn" data-info-title="Market Scanner & Strategi" data-info="Mengatur berapa banyak pair terlikuid yang dipindai, jumlah candle historis, timeframe analisa (HTF & LTF), serta strategi AI mana saja yang aktif.">i</button>
+                <button type="button" class="info-btn" data-info-title="Market Scanner & Strategi" data-info="Mengatur jumlah pair terlikuid (Top N Pairs) dan strategi AI yang aktif. Timeframe HTF/LTF, Kline Limit, serta Setup Expiry diatur per strategi pada tabel Kelola Strategi di bawah.">i</button>
               </h4>
-              <div class="field-grid-2">
-                <div>
-                  <label for="cfg-top-n-pairs">
-                    Top N Pairs
-                    <button type="button" class="info-btn" data-info-title="Top N Pairs" data-info="Jumlah pair USDT-M Futures teratas berdasarkan volume 24 jam terbesar di MEXC yang akan dipindai. Contoh: 20 memindai 20 pair paling likuid (semakin besar = semakin banyak panggilan AI).">i</button>
-                  </label>
-                  <input id="cfg-top-n-pairs" type="number" min="1" max="100" value="30" />
-                </div>
-                <div>
-                  <label for="cfg-kline-limit">
-                    Kline Limit (Candles)
-                    <button type="button" class="info-btn" data-info-title="Kline Limit (Candles)" data-info="Jumlah candlestick historis per timeframe yang diambil dari MEXC (rekomendasi: 250). Dibatasi maks 500 agar fetch multi-pair & komputasi indikator cepat; indikator EMA 200, RSI 14, ATR 14, & Vol MA20 hanya membutuhkan >= 200 candle.">i</button>
-                  </label>
-                  <input id="cfg-kline-limit" type="number" min="60" max="500" value="250" />
-                </div>
-                <div>
-                  <label for="cfg-htf-interval">
-                    HTF Interval
-                    <button type="button" class="info-btn" data-info-title="HTF Interval (Higher Timeframe)" data-info="Timeframe besar untuk membaca arah tren utama dan level mayor (contoh: Min60 / 1H).">i</button>
-                  </label>
-                  <select id="cfg-htf-interval">
-                    <option value="Min30">Min30</option>
-                    <option value="Min60">Min60 (1H)</option>
-                    <option value="Hour4">Hour4 (4H)</option>
-                    <option value="Day1">Day1 (1D)</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="cfg-ltf-interval">
-                    LTF Interval
-                    <button type="button" class="info-btn" data-info-title="LTF Interval (Lower Timeframe)" data-info="Timeframe kecil untuk mencari titik entry presisi, pullback, breakout, atau pantulan range (contoh: Min15 / 15m).">i</button>
-                  </label>
-                  <select id="cfg-ltf-interval">
-                    <option value="Min5">Min5 (5m)</option>
-                    <option value="Min15">Min15 (15m)</option>
-                    <option value="Min30">Min30 (30m)</option>
-                    <option value="Min60">Min60 (1H)</option>
-                  </select>
-                </div>
+              <div style="margin-bottom: 10px;">
+                <label for="cfg-top-n-pairs">
+                  Top N Pairs
+                  <button type="button" class="info-btn" data-info-title="Top N Pairs" data-info="Jumlah pair USDT-M Futures teratas berdasarkan volume 24 jam terbesar di MEXC yang akan dipindai. Contoh: 20 memindai 20 pair paling likuid (semakin besar = semakin banyak panggilan AI).">i</button>
+                </label>
+                <input id="cfg-top-n-pairs" type="number" min="1" max="100" value="30" />
+                <p class="subtitle-sm" style="margin: 6px 0 0;">HTF/LTF, Kline Limit, dan Expiry selalu mengikuti pengaturan masing-masing strategi di tabel <strong>Kelola Strategi</strong> di bawah.</p>
               </div>
               <label class="field-block-label">
                 Active Strategies
-                <button type="button" class="info-btn" data-info-title="Active Strategies" data-info="Daftar strategi diambil langsung dari tabel 'strategies' di MySQL. Centang atau gunakan tabel Kelola Strategi di bawah untuk menambah strategi baru, mengubah aturan prompt, serta mengaktifkan/menonaktifkan strategi.">i</button>
+                <button type="button" class="info-btn" data-info-title="Active Strategies" data-info="Daftar strategi diambil langsung dari tabel 'strategies' di MySQL. Centang atau gunakan tabel Kelola Strategi di bawah untuk menambah strategi baru, mengubah timeframe/prompt, serta mengaktifkan/menonaktifkan strategi.">i</button>
               </label>
               <div id="cfg-strategy-list" class="strategy-checks"></div>
             </div>

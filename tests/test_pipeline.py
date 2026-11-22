@@ -111,8 +111,11 @@ async def test_pipeline_run_once_persists_valid_setup_and_logs_rejections(db_ses
         assert runs[-1].settings_snapshot is not None
         assert runs[-1].settings_snapshot["active_strategies"] == ["TREND_PULLBACK", "MEAN_REVERSION_SCALP"]
         assert runs[-1].settings_snapshot["top_n_pairs"] == 5
-        assert "htf_interval" in runs[-1].settings_snapshot
-        assert "ltf_interval" in runs[-1].settings_snapshot
+        assert "strategy_timeframes" in runs[-1].settings_snapshot
+        assert "htf_interval" not in runs[-1].settings_snapshot
+        assert "ltf_interval" not in runs[-1].settings_snapshot
+        assert "kline_limit" not in runs[-1].settings_snapshot
+        assert "setup_expiry_hours" not in runs[-1].settings_snapshot
     finally:
         verify_db.close()
 
@@ -152,3 +155,138 @@ async def test_pipeline_marks_run_failed_when_all_ai_calls_error(db_session, mon
     summary = await pipe.run_once(strategies=["TREND_PULLBACK"], top_n=5)
     assert summary["status"] == "FAILED"
     assert "Invalid API Key" in summary["error"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_multi_strategy_resolves_per_strategy_timeframes_and_deduplicates_klines(db_session, monkeypatch):
+    db, TestingSessionLocal, _ = db_session
+    key_row = db.query(AppSetting).filter(AppSetting.key == "commandcode_api_key").first()
+    key_row.value = "test-cmd-key"
+    db.commit()
+
+    from app.core import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "SessionLocal", TestingSessionLocal)
+
+    fetched_intervals: list[tuple[str, str]] = []
+
+    async def fake_get_top_pairs(self, top_n=None, min_quote_volume=None):
+        return 20, [
+            {
+                "symbol": "ETH_USDT",
+                "contract": {"symbol": "ETH_USDT"},
+                "ticker": {"lastPrice": 132.0, "amount24": 50_000_000, "fundingRate": 0.0001, "holdVol": 5000},
+                "amount24": 50_000_000,
+            }
+        ]
+
+    async def fake_get_kline(self, symbol, interval="Min15", limit=250, start_ts=None, end_ts=None):
+        fetched_intervals.append((symbol, interval))
+        return _make_sample_candles(80)
+
+    seen_intervals_by_strat: dict[str, tuple[str, str]] = {}
+
+    async def fake_analyze(snapshot, strategy, llm_config, client=None, timeout_seconds=None):
+        seen_intervals_by_strat[strategy] = (
+            snapshot["htf_1h"]["interval"],
+            snapshot["ltf_15m"]["interval"],
+        )
+        return (
+            AISetupDecision(
+                symbol=snapshot["symbol"],
+                strategy_used=strategy,
+                decision="NO_TRADE",
+                market_regime="RANGING",
+                entry_type="NONE",
+                confidence=40,
+                invalidation_reason="N/A",
+                rationale="Dry check",
+            ),
+            {"mock": True},
+        )
+
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_top_pairs", fake_get_top_pairs)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_kline", fake_get_kline)
+    monkeypatch.setattr(pipeline_mod, "analyze_market_snapshot", fake_analyze)
+
+    pipe = ScanPipeline()
+    # TREND_PULLBACK + BREAKOUT_MOMENTUM share Min60/Min15; MEAN_REVERSION_SCALP uses Min30/Min5
+    summary = await pipe.run_once(
+        strategies=["TREND_PULLBACK", "BREAKOUT_MOMENTUM", "MEAN_REVERSION_SCALP"],
+        top_n=5,
+    )
+    assert summary["status"] == "COMPLETED"
+    assert summary["ai_analyzed"] == 3
+    # Min60 and Min15 must only be fetched ONCE even though two strategies use them
+    assert len(fetched_intervals) == 4
+    assert set(fetched_intervals) == {
+        ("ETH_USDT", "Min60"),
+        ("ETH_USDT", "Min15"),
+        ("ETH_USDT", "Min30"),
+        ("ETH_USDT", "Min5"),
+    }
+    assert seen_intervals_by_strat["TREND_PULLBACK"] == ("Min60", "Min15")
+    assert seen_intervals_by_strat["BREAKOUT_MOMENTUM"] == ("Min60", "Min15")
+    assert seen_intervals_by_strat["MEAN_REVERSION_SCALP"] == ("Min30", "Min5")
+
+    verify_db = TestingSessionLocal()
+    try:
+        latest_run = verify_db.query(ScanRun).order_by(ScanRun.id.desc()).first()
+        tf_map = latest_run.settings_snapshot["strategy_timeframes"]
+        assert tf_map["MEAN_REVERSION_SCALP"]["htf"] == "Min30"
+        assert tf_map["MEAN_REVERSION_SCALP"]["ltf"] == "Min5"
+    finally:
+        verify_db.close()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_single_strategy_also_uses_per_strategy_timeframe(db_session, monkeypatch):
+    db, TestingSessionLocal, _ = db_session
+    key_row = db.query(AppSetting).filter(AppSetting.key == "commandcode_api_key").first()
+    key_row.value = "test-cmd-key"
+    db.commit()
+
+    from app.core import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "SessionLocal", TestingSessionLocal)
+
+    async def fake_get_top_pairs(self, top_n=None, min_quote_volume=None):
+        return 10, [
+            {
+                "symbol": "SOL_USDT",
+                "contract": {"symbol": "SOL_USDT"},
+                "ticker": {"lastPrice": 132.0, "amount24": 50_000_000, "fundingRate": 0.0001, "holdVol": 5000},
+                "amount24": 50_000_000,
+            }
+        ]
+
+    async def fake_get_kline(self, symbol, interval="Min15", limit=250, start_ts=None, end_ts=None):
+        return _make_sample_candles(80)
+
+    seen_single: list[tuple[str, str]] = []
+
+    async def fake_analyze(snapshot, strategy, llm_config, client=None, timeout_seconds=None):
+        seen_single.append((snapshot["htf_1h"]["interval"], snapshot["ltf_15m"]["interval"]))
+        return (
+            AISetupDecision(
+                symbol=snapshot["symbol"],
+                strategy_used=strategy,
+                decision="NO_TRADE",
+                market_regime="RANGING",
+                entry_type="NONE",
+                confidence=40,
+                invalidation_reason="N/A",
+                rationale="Dry check",
+            ),
+            {"mock": True},
+        )
+
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_top_pairs", fake_get_top_pairs)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_kline", fake_get_kline)
+    monkeypatch.setattr(pipeline_mod, "analyze_market_snapshot", fake_analyze)
+
+    pipe = ScanPipeline()
+    # Even with global defaults at Min60/Min15, MEAN_REVERSION_SCALP uses its own Min30/Min5
+    summary = await pipe.run_once(strategies=["MEAN_REVERSION_SCALP"], top_n=5)
+    assert summary["status"] == "COMPLETED"
+    assert seen_single == [("Min30", "Min5")]

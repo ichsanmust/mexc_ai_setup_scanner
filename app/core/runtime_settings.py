@@ -15,12 +15,8 @@ RUNTIME_SETTING_KEYS = [
     "mexc_max_concurrency",
     "auto_scan_enabled",
     "top_n_pairs",
-    "htf_interval",
-    "ltf_interval",
-    "kline_limit",
     "scan_interval_minutes",
     "tracker_interval_seconds",
-    "setup_expiry_hours",
     "active_strategies",
     "min_24h_quote_volume",
     "max_24h_quote_volume",
@@ -83,9 +79,6 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
         if "mexc_proxy_url" in rows
         else settings.mexc_proxy_url.strip()
     )
-    htf_interval = (rows.get("htf_interval") or settings.htf_interval).strip()
-    ltf_interval = (rows.get("ltf_interval") or settings.ltf_interval).strip()
-
     return {
         "llm_timeout_seconds": _parse_int(rows.get("llm_timeout_seconds"), settings.llm_timeout_seconds, 5, 300),
         "llm_max_concurrency": _parse_int(rows.get("llm_max_concurrency"), settings.llm_max_concurrency, 1, 20),
@@ -95,14 +88,10 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
         "auto_scan_enabled": auto_enabled,
         "scan_mode": "AUTO" if auto_enabled else "MANUAL",
         "top_n_pairs": _parse_int(rows.get("top_n_pairs"), settings.top_n_pairs, 1, 100),
-        "htf_interval": htf_interval,
-        "ltf_interval": ltf_interval,
-        "kline_limit": _parse_int(rows.get("kline_limit"), settings.kline_limit, 60, 500),
         "scan_interval_minutes": _parse_int(rows.get("scan_interval_minutes"), settings.scan_interval_minutes, 1, 1440),
         "tracker_interval_seconds": _parse_int(
             rows.get("tracker_interval_seconds"), settings.tracker_interval_seconds, 15, 3600
         ),
-        "setup_expiry_hours": _parse_int(rows.get("setup_expiry_hours"), settings.setup_expiry_hours, 1, 168),
         "active_strategies": strategies,
         "min_24h_quote_volume": _parse_float(
             rows.get("min_24h_quote_volume"), settings.min_24h_quote_volume, 0.0, 1e13

@@ -308,7 +308,7 @@ class AITestResponse(BaseModel):
 
 
 class ScannerSettingsOut(BaseModel):
-    """Persistent scanner, MEXC API, LLM runtime, and risk-guard settings."""
+    """Persistent global scanner, MEXC API, LLM runtime, and risk-guard settings."""
 
     llm_timeout_seconds: int
     llm_max_concurrency: int
@@ -318,12 +318,8 @@ class ScannerSettingsOut(BaseModel):
     auto_scan_enabled: bool
     scan_mode: Literal["AUTO", "MANUAL"]
     top_n_pairs: int
-    htf_interval: str
-    ltf_interval: str
-    kline_limit: int
     scan_interval_minutes: int
     tracker_interval_seconds: int
-    setup_expiry_hours: int
     active_strategies: list[str]
     min_24h_quote_volume: float
     max_24h_quote_volume: float = 0.0
@@ -333,7 +329,7 @@ class ScannerSettingsOut(BaseModel):
 
 
 class ScannerSettingsUpdate(BaseModel):
-    """Update scanner, MEXC API, LLM runtime, and risk-guard settings in MySQL."""
+    """Update global scanner, MEXC API, LLM runtime, and risk-guard settings in MySQL."""
 
     llm_timeout_seconds: Optional[int] = Field(default=None, ge=5, le=300)
     llm_max_concurrency: Optional[int] = Field(default=None, ge=1, le=20)
@@ -342,12 +338,8 @@ class ScannerSettingsUpdate(BaseModel):
     mexc_max_concurrency: Optional[int] = Field(default=None, ge=1, le=20)
     auto_scan_enabled: Optional[bool] = None
     top_n_pairs: Optional[int] = Field(default=None, ge=1, le=100)
-    htf_interval: Optional[str] = Field(default=None, max_length=20)
-    ltf_interval: Optional[str] = Field(default=None, max_length=20)
-    kline_limit: Optional[int] = Field(default=None, ge=60, le=500)
     scan_interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     tracker_interval_seconds: Optional[int] = Field(default=None, ge=15, le=3600)
-    setup_expiry_hours: Optional[int] = Field(default=None, ge=1, le=168)
     active_strategies: Optional[list[str]] = None
     min_24h_quote_volume: Optional[float] = Field(default=None, ge=0.0)
     max_24h_quote_volume: Optional[float] = Field(default=None, ge=0.0)

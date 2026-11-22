@@ -101,7 +101,21 @@ def test_validator_blocks_duplicate_open_setup(db_session):
     db.add(existing)
     db.commit()
 
-    dup = _make_decision(symbol="ETH_USDT", decision="LONG")
+    dup = _make_decision(symbol="ETH_USDT", decision="LONG", strategy_used="TREND_PULLBACK")
     ok, _, reason = validate_and_guard_setup(dup, db=db)
     assert ok is False
     assert "Duplicate OPEN setup" in reason
+
+    # Same symbol + decision on a DIFFERENT strategy is allowed for multi-strategy confluence & analytics
+    other_strat = _make_decision(
+        symbol="ETH_USDT",
+        decision="LONG",
+        strategy_used="BREAKOUT_MOMENTUM",
+        entry_price=3000.0,
+        stop_loss=2950.0,
+        take_profit=3100.0,
+    )
+    ok_other, norm_other, reason_other = validate_and_guard_setup(other_strat, db=db)
+    assert ok_other is True
+    assert reason_other == "APPROVED"
+    assert norm_other.strategy_used == "BREAKOUT_MOMENTUM"

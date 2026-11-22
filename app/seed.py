@@ -259,24 +259,6 @@ def seed_all(db: Session) -> None:
     )
     _upsert_default_setting(
         db,
-        "htf_interval",
-        settings.htf_interval,
-        "Higher Timeframe kline interval (Min30, Min60, Hour4, Day1)",
-    )
-    _upsert_default_setting(
-        db,
-        "ltf_interval",
-        settings.ltf_interval,
-        "Lower Timeframe kline interval (Min5, Min15, Min30, Min60)",
-    )
-    _upsert_default_setting(
-        db,
-        "kline_limit",
-        str(settings.kline_limit),
-        "Jumlah candle historis yang diambil per timeframe",
-    )
-    _upsert_default_setting(
-        db,
         "scan_interval_minutes",
         str(settings.scan_interval_minutes),
         "Interval auto-scan dalam menit",
@@ -287,12 +269,10 @@ def seed_all(db: Session) -> None:
         str(settings.tracker_interval_seconds),
         "Interval pengecekan outcome setup OPEN dalam detik",
     )
-    _upsert_default_setting(
-        db,
-        "setup_expiry_hours",
-        str(settings.setup_expiry_hours),
-        "Masa berlaku setup OPEN sebelum EXPIRED (jam)",
-    )
+    # Remove obsolete global timeframe/kline/expiry records (now managed strictly per strategy)
+    db.query(AppSetting).filter(
+        AppSetting.key.in_(["htf_interval", "ltf_interval", "kline_limit", "setup_expiry_hours"])
+    ).delete(synchronize_session=False)
     _upsert_default_setting(
         db,
         "active_strategies",

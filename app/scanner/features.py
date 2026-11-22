@@ -113,21 +113,25 @@ def detect_swings_and_sr(
 
 
 def _candle_metrics(row: pd.Series) -> dict[str, Any]:
-    """Summarize body and wick proportions of a single candle."""
+    """Summarize body, wick proportions, volume, and direction of a single candle."""
     o = float(row["open"])
     h = float(row["high"])
     l = float(row["low"])
     c = float(row["close"])
+    v = float(row.get("volume", 0.0))
     full_range = max(h - l, 1e-12)
     body = abs(c - o)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
+    is_bullish = c >= o
     return {
         "open": round(o, 8),
         "high": round(h, 8),
         "low": round(l, 8),
         "close": round(c, 8),
-        "direction": "BULLISH" if c >= o else "BEARISH",
+        "volume": round(v, 4),
+        "is_bullish": is_bullish,
+        "direction": "BULLISH" if is_bullish else "BEARISH",
         "body_pct": round((body / full_range) * 100.0, 2),
         "upper_wick_pct": round((upper_wick / full_range) * 100.0, 2),
         "lower_wick_pct": round((lower_wick / full_range) * 100.0, 2),
@@ -182,6 +186,9 @@ def summarize_timeframe(candles: list[dict[str, Any]], interval: str) -> dict[st
         "dist_to_ema200_pct": round(((close - ema200) / ema200 * 100.0) if ema200 else 0.0, 3),
         "rsi14": round(rsi14, 2),
         "prev_rsi14": round(prev_rsi14, 2),
+        "dss": round(float(last["dss"]), 2),
+        "prev_dss": round(float(prev["dss"]), 2),
+        "dss_signal": round(float(last["dss_signal"]), 2),
         "atr14": round(atr14, 8),
         "atr_pct": round(atr_pct, 3),
         "vol_ma20": round(float(last["vol_ma20"]), 4),

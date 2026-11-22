@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Alur Scan &amp; Audit Data — MEXC AI Setup Scanner</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .flow-container {
+      max-width: 1280px;
+      margin: 20px auto 48px;
+      padding: 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .pipeline-wrap {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+    @media (max-width: 1024px) {
+      .pipeline-wrap { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .pipeline-wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .stage-node {
+      position: relative;
+      text-align: left;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      cursor: pointer;
+      transition: all 0.16s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .stage-node:hover {
+      border-color: var(--accent);
+      background: var(--panel);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-sm);
+    }
+    .stage-node.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .stage-step {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .stage-node.active .stage-step { color: var(--accent); }
+    .stage-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .stage-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .detail-card {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 12px;
+    }
+    @media (max-width: 820px) {
+      .detail-grid { grid-template-columns: 1fr; }
+    }
+    .pill-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .code-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .code-pill.warn {
+      background: #fef3c7;
+      border-color: #f59e0b;
+      color: #92400e;
+    }
+    .code-pill.ok {
+      background: #dcfce7;
+      border-color: #22c55e;
+      color: #166534;
+    }
+    .info-two-col {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+    }
+    @media (max-width: 960px) {
+      .info-two-col { grid-template-columns: 1fr; }
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .data-table th, .data-table td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .data-table th {
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      background: var(--panel-2);
+    }
+    .json-pre {
+      margin: 0;
+      padding: 14px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .audit-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: var(--panel-2);
+    }
+    .audit-item.warn {
+      border-left: 4px solid var(--amber);
+      background: #fffbeb;
+    }
+    .audit-item.ok {
+      border-left: 4px solid var(--green);
+      background: #f0fdf4;
+    }
+    .audit-title {
+      font-weight: 700;
+      font-size: 13.5px;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .live-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge">M</div>
+      <div>
+        <h1>Alur Scan &amp; Audit Data Sistem</h1>
+        <p class="subtitle">MEXC Futures API &rarr; Indikator &rarr; Multi-Strategi &rarr; AI Decision &rarr; Risk Guard &rarr; Tracker</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <a href="/" class="btn btn-secondary" style="text-decoration:none;">&larr; Kembali ke Dashboard</a>
+    </div>
+  </header>
+
+  <main class="flow-container">
+    <!-- Live Runtime Config Bar -->
+    <section class="card" style="padding: 14px 18px;">
+      <div class="live-strip">
+        <strong style="font-size: 13px;">Konfigurasi Scan Saat Ini:</strong>
+        <span id="live-htf-ltf" class="code-pill">Memuat settings...</span>
+        <span id="live-top-n" class="code-pill">Top N: -</span>
+        <span id="live-strategies" class="code-pill">Strategi aktif: -</span>
+      </div>
+    </section>
+
+    <!-- Interactive Pipeline Diagram -->
+    <section class="card" style="padding: 18px;">
+      <div class="card-header" style="margin-bottom: 12px;">
+        <div>
+          <h3 style="margin:0;">Diagram Interaktif Alur Scan (<code style="font-size:12px;">app/core/pipeline.py</code>)</h3>
+          <p class="subtitle-sm" style="margin:3px 0 0;">Klik salah satu tahapan di bawah untuk melihat endpoint, rumus/indikator, dan aturan validasinya.</p>
+        </div>
+        <span class="badge badge-neutral">6 Tahap Pipeline</span>
+      </div>
+
+      <div class="pipeline-wrap" id="stage-buttons">
+        <button type="button" class="stage-node active" data-stage="mexc">
+          <span class="stage-step">1. Source</span>
+          <span class="stage-title">MEXC Public API</span>
+          <span class="stage-sub">detail, ticker &amp; kline HTF/LTF</span>
+        </button>
+        <button type="button" class="stage-node" data-stage="features">
+          <span class="stage-step">2. Feature Engine</span>
+          <span class="stage-title">Pre-Filter &amp; Indikator</span>
+          <span class="stage-sub">EMA, RSI14, ATR, S&amp;R, Candles</span>
+        </button>
+        <button type="button" class="stage-node" data-stage="strategy">
+          <span class="stage-step">3. Strategi DB</span>
+          <span class="stage-title">Loop Multi-Strategi</span>
+          <span class="stage-sub">Pair &times; Strategi Aktif</span>
+        </button>
+        <button type="button" class="stage-node" data-stage="ai">
+          <span class="stage-step">4. LLM Analysis</span>
+          <span class="stage-title">Analisa AI Snapshot</span>
+          <span class="stage-sub">Prompt Strategi + JSON Market</span>
+        </button>
+        <button type="button" class="stage-node" data-stage="guard">
+          <span class="stage-step">5. Validation</span>
+          <span class="stage-title">Risk &amp; Math Guard</span>
+          <span class="stage-sub">Cek SL/Entry/TP &amp; Min R:R</span>
+        </button>
+        <button type="button" class="stage-node" data-stage="db">
+          <span class="stage-step">6. Output</span>
+          <span class="stage-title">MySQL &amp; Tracker</span>
+          <span class="stage-sub">Simpan Setup &amp; Cek Outcome</span>
+        </button>
+      </div>
+
+      <div id="stage-detail" class="detail-card" style="margin-top: 14px;"></div>
+    </section>
+
+    <!-- Middle Grid: MEXC Data Table + JSON Snapshot Example -->
+    <section class="info-two-col">
+      <div class="card" style="padding: 18px;">
+        <h3 style="margin: 0 0 6px;">Apa Saja yang Diambil dari MEXC?</h3>
+        <p class="subtitle-sm" style="margin: 0 0 12px;">Diimplementasikan di <code>app/scanner/mexc_public.py</code> dan diolah di <code>app/scanner/features.py</code>.</p>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Endpoint MEXC</th>
+              <th>Field Mentah MEXC</th>
+              <th>Fungsi di Scanner / AI</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>/api/v1/contract/detail</code></td>
+              <td><code>symbol</code>, <code>quoteCoin</code>, <code>state</code></td>
+              <td>Menyaring kontrak aktif USDT (<code>quoteCoin == "USDT"</code> &amp; <code>state == 0</code>).</td>
+            </tr>
+            <tr>
+              <td><code>/api/v1/contract/ticker</code></td>
+              <td>
+                <code>amount24</code>, <code>lastPrice</code>, <code>fairPrice</code>, <code>indexPrice</code>,
+                <code>riseFallRate</code>, <code>fundingRate</code>, <code>holdVol</code>,
+                <code>high24Price</code>, <code>lower24Price</code>
+              </td>
+              <td>
+                Ranking top volume 24 jam (<code>amount24</code>) + mengisi blok <code>market_ticker</code> di JSON snapshot AI.
+                *(<code>fundingRate</code> langsung diambil dari ticker, tanpa memanggil endpoint <code>funding_rate</code> terpisah saat scan).*
+              </td>
+            </tr>
+            <tr>
+              <td><code>/api/v1/contract/kline/{symbol}</code></td>
+              <td><code>time</code>, <code>open</code>, <code>high</code>, <code>low</code>, <code>close</code>, <code>volume</code></td>
+              <td>
+                Ditarik sesuai <code>suggested_htf</code>, <code>suggested_ltf</code>, dan <code>suggested_kline_limit</code> masing-masing strategi aktif (terdeduplikasi per <code>(symbol, interval)</code>). Dipakai menghitung EMA21/50/200, RSI14, DSS Bressert, ATR14, Volume MA20, Swing High/Low, S&amp;R, dan 3 candle terakhir.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="padding: 18px;">
+        <h3 style="margin: 0 0 6px;">Contoh Payload <code>MARKET SNAPSHOT</code> ke AI</h3>
+        <p class="subtitle-sm" style="margin: 0 0 12px;">Bentuk exact JSON yang diterima LLM untuk setiap pasangan <code>(pair, strategi)</code>.</p>
+        <pre class="json-pre">{
+  "symbol": "BTC_USDT",
+  "market_ticker": {
+    "last_price": 95000.0,
+    "fair_price": 95010.0,
+    "index_price": 95005.0,
+    "change_24h_pct": 2.45,
+    "quote_volume_24h": 480000000.0,
+    "funding_rate": 0.0001,
+    "open_interest_hold_vol": 12500000.0,
+    "high_24h": 96100.0,
+    "low_24h": 92300.0
+  },
+  "htf_1h": {
+    "interval": "Min60",
+    "bars_count": 260,
+    "close": 95000.0,
+    "ema21": 94500.0, "ema50": 93800.0, "ema200": 91200.0,
+    "ema_bias": "BULLISH_ALIGNED",
+    "dist_to_ema21_pct": 0.53, "dist_to_ema50_pct": 1.28, "dist_to_ema200_pct": 4.17,
+    "rsi14": 58.4, "prev_rsi14": 54.1,
+    "dss": 62.15, "prev_dss": 57.8, "dss_signal": 59.4,
+    "atr14": 420.5, "atr_pct": 0.44,
+    "vol_ma20": 18000.0, "current_volume": 24500.0, "volume_ratio": 1.36,
+    "compression_ratio": 0.88,
+    "recent_swing_high": 96100.0, "recent_swing_low": 93100.0,
+    "nearest_support": 93500.0, "nearest_resistance": 96100.0,
+    "dist_to_support_pct": 1.58, "dist_to_resistance_pct": 1.16,
+    "recent_candles": [
+      {
+        "open": 94600, "high": 95150, "low": 94480, "close": 95000,
+        "volume": 24500.0, "is_bullish": true, "direction": "BULLISH",
+        "body_pct": 59.7, "upper_wick_pct": 22.39, "lower_wick_pct": 17.91
+      }
+    ]
+  },
+  "ltf_15m": { "interval": "Min15", "...same_keys_as_htf": "..." }
+}</pre>
+      </div>
+    </section>
+
+    <!-- Audit Section -->
+    <section class="card" style="padding: 18px;">
+      <div class="card-header" style="margin-bottom: 12px;">
+        <div>
+          <h3 style="margin:0;">Status Sinkronisasi: Prompt Strategi vs Data MEXC Snapshot Aktual</h3>
+          <p class="subtitle-sm" style="margin:3px 0 0;">Seluruh indikator, field candle, DSS Bressert, dan resolusi timeframe multi-strategi sudah disinkronkan dengan prompt strategi.</p>
+        </div>
+        <span class="badge badge-hit-tp">Semua Tersinkronisasi</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="audit-item ok">
+          <div class="audit-title">
+            <span class="code-pill ok">VALID 100%</span>
+            <span>Indikator Inti, DSS Bressert &amp; Ticker Pasar Lengkap</span>
+          </div>
+          <div style="font-size:13px; color:var(--text);">
+            Seluruh indikator — <code>ema21</code>, <code>ema50</code>, <code>ema200</code>, <code>ema_bias</code>, <code>rsi14</code>, <code>prev_rsi14</code>, <code>dss</code>, <code>prev_dss</code>, <code>dss_signal</code>, <code>atr14</code>, <code>atr_pct</code>, <code>volume_ratio</code>, <code>vol_ma20</code>, <code>current_volume</code>, <code>compression_ratio</code>, <code>recent_swing_high/low</code>, <code>nearest_support/resistance</code>, <code>funding_rate</code>, dan <code>open_interest_hold_vol</code> — dihitung dan dikirim ke AI.
+          </div>
+        </div>
+
+        <div class="audit-item ok">
+          <div class="audit-title">
+            <span class="code-pill ok">SUDAH DIPERBAIKI #1</span>
+            <span><code>recent_candles</code> lengkap dengan <code>volume</code>, <code>is_bullish</code>, &amp; <code>direction</code></span>
+          </div>
+          <div style="font-size:13px; color:var(--text);">
+            Fungsi <code>_candle_metrics</code> di <code>app/scanner/features.py</code> kini mengirim <code>open, high, low, close, volume, is_bullish, direction, body_pct, upper_wick_pct, lower_wick_pct</code> sehingga cocok 1:1 dengan seluruh prompt strategi custom.
+          </div>
+        </div>
+
+        <div class="audit-item ok">
+          <div class="audit-title">
+            <span class="code-pill ok">SUDAH DIPERBAIKI #2</span>
+            <span>Selalu Per-Strategi (<code>suggested_htf</code> / <code>suggested_ltf</code>) &amp; Info Konteks AI</span>
+          </div>
+          <div style="font-size:13px; color:var(--text);">
+            Setiap strategi aktif (baik 1 maupun multi-strategi) otomatis memakai <code>suggested_htf</code>, <code>suggested_ltf</code>, <code>suggested_kline_limit</code>, dan <code>suggested_expiry_hours</code> masing-masing dari tabel <code>strategies</code> (kline MEXC terdeduplikasi per <code>(symbol, interval)</code>). Key JSON tetap <code>htf_1h</code> &amp; <code>ltf_15m</code> agar kompatibel dengan prompt/UI, disertai keterangan <code>interval</code> aktual di prompt pesan ke LLM (<code>app/ai/analyzer.py</code>).
+          </div>
+        </div>
+
+        <div class="audit-item ok">
+          <div class="audit-title">
+            <span class="code-pill ok">SUDAH DIPERBAIKI #3</span>
+            <span><code>dss</code> / <code>dss_signal</code> Tersedia di AI &amp; Proksi Squeeze Terdokumentasi</span>
+          </div>
+          <div style="font-size:13px; color:var(--text);">
+            <code>dss</code>, <code>prev_dss</code>, dan <code>dss_signal</code> kini ikut dikirim di <code>summarize_timeframe</code> untuk AI. Karena MEXC public REST tidak menyediakan feed likuidasi, <code>analyzer.py</code> dan <code>SWING_CONTRARIAN_SQUEEZE</code> menilai potensi squeeze dari proksi <code>funding_rate</code> + <code>open_interest_hold_vol</code>.
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const STAGES = {
+      mexc: {
+        title: "1. Pengambilan Data dari MEXC Public Futures API",
+        badge: "app/scanner/mexc_public.py",
+        summary: "Mengambil daftar kontrak aktif USDT, ticker 24 jam untuk filter likuiditas & ranking top N volume, lalu menarik kline HTF & LTF secara paralel.",
+        leftTitle: "Endpoint & Parameter",
+        leftItems: [
+          "GET /api/v1/contract/detail → filter quoteCoin == 'USDT' dan state == 0",
+          "GET /api/v1/contract/ticker → sortir berdasar amount24 (quote volume 24h) sesuai top_n & min/max volume",
+          "GET /api/v1/contract/kline/{symbol} → tarik candle sesuai suggested_kline_limit, suggested_htf, dan suggested_ltf per strategi secara terdeduplikasi"
+        ],
+        rightTitle: "Field Ticker yang Disimpan",
+        rightPills: [
+          "lastPrice", "fairPrice", "indexPrice", "riseFallRate",
+          "amount24", "fundingRate", "holdVol", "high24Price", "lower24Price"
+        ]
+      },
+      features: {
+        title: "2. Pre-Filter Volatilitas & Perhitungan Indikator Lokal",
+        badge: "app/scanner/features.py",
+        summary: "Kline HTF & LTF diproses dengan pandas menjadi ringkasan indikator teknikal serta difilter oleh rentang ATR% (min_atr_pct s/d max_atr_pct). Pair yang gagal masuk log ScanEvaluation (PREFILTER).",
+        leftTitle: "Aturan Pre-Filter",
+        leftItems: [
+          "Minimum bar HTF & LTF terpenuhi dan data harga valid",
+          "LTF atr_pct berada dalam rentang [min_atr_pct, max_atr_pct]",
+          "Pair lolos dibentuk menjadi dict MARKET SNAPSHOT"
+        ],
+        rightTitle: "Indikator yang Dihitung untuk AI",
+        rightPills: [
+          "ema21", "ema50", "ema200", "ema_bias",
+          "rsi14", "prev_rsi14", "dss", "prev_dss", "dss_signal",
+          "atr14", "atr_pct", "vol_ma20", "current_volume",
+          "volume_ratio", "compression_ratio", "recent_swing_high",
+          "recent_swing_low", "nearest_support", "nearest_resistance",
+          "recent_candles (volume, is_bullish, direction)"
+        ]
+      },
+      strategy: {
+        title: "3. Pemuatan Strategi Aktif & Per-Strategy Timeframe",
+        badge: "app/core/pipeline.py + MySQL strategies",
+        summary: "Scanner memuat strategi aktif dari MySQL, selalu menyelesaikan HTF, LTF, Kline Limit, dan Expiry langsung per strategi, lalu menjalankan task (pair × strategi).",
+        leftTitle: "Perilaku Per-Strategi",
+        leftItems: [
+          "1 pair dievaluasi oleh SETIAP strategi aktif secara paralel (dibatasi llm_max_concurrency)",
+          "Setiap strategi (baik 1 maupun > 1 aktif) memakai suggested_htf, suggested_ltf, suggested_kline_limit, dan suggested_expiry_hours miliknya (kline MEXC terdeduplikasi per interval)",
+          "1 pair bisa menghasilkan > 1 setup jika lolos di beberapa strategi berbeda"
+        ],
+        rightTitle: "Atribut Strategi di DB",
+        rightPills: [
+          "name (code)", "display_name", "prompt_text",
+          "min_rr", "suggested_htf", "suggested_ltf",
+          "suggested_kline_limit", "suggested_expiry_hours", "is_active"
+        ]
+      },
+      ai: {
+        title: "4. Analisa AI per Pasangan (Pair × Strategi)",
+        badge: "app/ai/analyzer.py",
+        summary: "Mengirim system_prompt strategi + JSON MARKET SNAPSHOT ke provider LLM aktif (CommandCode / OpenRouter / Custom) dengan format output JSON ketat (AISetupDecision).",
+        leftTitle: "Konteks yang Dikirim ke LLM",
+        leftItems: [
+          "System Prompt: aturan strategi spesifik dari database (atau default prompt bila kosong)",
+          "User Message: blok JSON MARKET SNAPSHOT berisi market_ticker, htf_1h, dan ltf_15m"
+        ],
+        rightTitle: "Skema Output AISetupDecision",
+        rightPills: [
+          "symbol", "strategy_used", "decision (LONG/SHORT/NO_TRADE)",
+          "market_regime", "entry_type", "entry_price",
+          "stop_loss", "take_profit", "risk_reward_ratio",
+          "confidence (0-100)", "invalidation_reason", "rationale"
+        ]
+      },
+      guard: {
+        title: "5. Deterministic Risk & Math Guard",
+        badge: "app/core/validator.py",
+        summary: "Setiap jawaban AI wajib melewati validasi deterministik sebelum boleh masuk database. Yang ditolak dicatat di ScanEvaluation beserta rejection_reason.",
+        leftTitle: "Pengecekan Wajib",
+        leftItems: [
+          "Keputusan bukan NO_TRADE dan confidence >= min_confidence",
+          "Geometri harga valid: LONG harus SL < Entry < TP; SHORT harus TP < Entry < SL (semua positif & finite)",
+          "Hitung ulang R:R = |TP - Entry| / |Entry - SL| dan wajib >= min_rr strategi",
+          "Anti-duplikat: tolak jika sudah ada TradeSetup aktif (OPEN/ENTRY_HIT/MANUAL_TAKEN) untuk (symbol, decision, strategy_used)"
+        ],
+        rightTitle: "Status Hasil Validasi",
+        rightPills: [
+          "LOLOS → Simpan ke trade_setups",
+          "DITOLAK → Catat di scan_evaluations"
+        ]
+      },
+      db: {
+        title: "6. Penyimpanan MySQL & Outcome Tracker",
+        badge: "app/core/tracker.py + trade_setups",
+        summary: "Setup valid disimpan dengan status awal OPEN (membawa snapshot & ai_payload). Tracker memantau ticker & candle Min1 dari MEXC untuk memperbarui outcome secara otomatis.",
+        leftTitle: "Transisi Status Setup",
+        leftItems: [
+          "LIMIT order menunggu harga menyentuh Entry (ENTRY_HIT); MARKET order langsung dianggap tersentuh",
+          "Cek kronologis candle Min1 sejak dibuat (atau sejak manual_action_at): mana yang lebih dulu tersentuh antara HIT_TP dan HIT_SL",
+          "Bila melewati expires_at (diatur per strategi via suggested_expiry_hours) sebelum tersentuh, status berubah menjadi EXPIRED"
+        ],
+        rightTitle: "Status Setup",
+        rightPills: [
+          "OPEN", "ENTRY_HIT", "MANUAL_TAKEN",
+          "HIT_TP", "HIT_SL", "EXPIRED",
+          "MANUAL_SKIPPED", "CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL"
+        ]
+      }
+    };
+
+    function renderStage(key) {
+      document.querySelectorAll(".stage-node").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.stage === key);
+      });
+      const s = STAGES[key];
+      const box = document.getElementById("stage-detail");
+      const leftHtml = `<ul style="margin:8px 0 0; padding-left:18px; line-height:1.55; font-size:13px;">${s.leftItems.map(i => `<li>${i}</li>`).join("")}</ul>`;
+      const rightHtml = `<div class="pill-list">${s.rightPills.map(p => `<span class="code-pill">${p}</span>`).join("")}</div>`;
+
+      box.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <strong style="font-size:15px;">${s.title}</strong>
+          <span class="code-pill">${s.badge}</span>
+        </div>
+        <p style="margin:6px 0 0; font-size:13px; color:var(--muted);">${s.summary}</p>
+        <div class="detail-grid">
+          <div>
+            <div style="font-size:11.5px; font-weight:700; text-transform:uppercase; color:var(--muted);">${s.leftTitle}</div>
+            ${leftHtml}
+          </div>
+          <div>
+            <div style="font-size:11.5px; font-weight:700; text-transform:uppercase; color:var(--muted);">${s.rightTitle}</div>
+            ${rightHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    document.getElementById("stage-buttons").addEventListener("click", (e) => {
+      const btn = e.target.closest(".stage-node");
+      if (btn && btn.dataset.stage) renderStage(btn.dataset.stage);
+    });
+
+    renderStage("mexc");
+
+    async function loadLiveContext() {
+      try {
+        const [setRes, stratRes] = await Promise.all([
+          fetch("/api/scanner/settings"),
+          fetch("/api/strategies")
+        ]);
+        if (setRes.ok) {
+          const cfg = await setRes.json();
+          document.getElementById("live-htf-ltf").textContent = `Mode: ${cfg.scan_mode} (${cfg.scan_interval_minutes}m) | Timeframe: Per-Strategi`;
+          document.getElementById("live-top-n").textContent = `Top N: ${cfg.top_n_pairs} | ATR: ${cfg.min_atr_pct}%-${cfg.max_atr_pct}%`;
+        }
+        if (stratRes.ok) {
+          const list = await stratRes.json();
+          const active = list
+            .filter(s => s.is_active)
+            .map(s => `${s.name} (${s.suggested_htf || "-"}/${s.suggested_ltf || "-"} · ${s.suggested_kline_limit || 250}b · ${s.suggested_expiry_hours || 12}j)`);
+          document.getElementById("live-strategies").textContent =
+            active.length ? `Strategi aktif (${active.length}): ${active.join(", ")}` : "Tidak ada strategi aktif";
+        }
+      } catch (_) {
+        document.getElementById("live-htf-ltf").textContent = "Offline preview mode";
+      }
+    }
+    loadLiveContext();
+  </script>
+</body>
+</html>

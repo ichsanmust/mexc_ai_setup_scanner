@@ -15,14 +15,44 @@ from ..ai.analyzer import (
     load_strategy_prompts_map,
     resolve_active_llm_config,
 )
+from ..config import settings
 from ..database import SessionLocal
-from ..models import ScanEvaluation, ScanRun, TradeSetup, utcnow
+from ..models import ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
 from ..scanner.features import prefilter_and_build_snapshot
 from ..scanner.mexc_public import MexcPublicClient
 from .runtime_settings import resolve_runtime_settings
 from .validator import validate_and_guard_setup
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_strategy_profiles(
+    db: Session,
+    strategies: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Resolve effective HTF/LTF/kline_limit/expiry_hours per active strategy.
+
+    Every active strategy uses its own suggested_htf/suggested_ltf/suggested_kline_limit/
+    suggested_expiry_hours from the strategies table (falling back to code defaults only if null).
+    """
+    rows = db.query(Strategy).filter(Strategy.name.in_([s.strip().upper() for s in strategies])).all()
+    rows_by_name = {r.name.strip().upper(): r for r in rows}
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for strat in strategies:
+        key = strat.strip().upper()
+        row = rows_by_name.get(key)
+        profiles[strat] = {
+            "htf": (row.suggested_htf if row and row.suggested_htf else settings.htf_interval),
+            "ltf": (row.suggested_ltf if row and row.suggested_ltf else settings.ltf_interval),
+            "kline_limit": int(
+                row.suggested_kline_limit if row and row.suggested_kline_limit else settings.kline_limit
+            ),
+            "expiry_hours": int(
+                row.suggested_expiry_hours if row and row.suggested_expiry_hours else settings.setup_expiry_hours
+            ),
+        }
+    return profiles
 
 
 def resolve_scanner_settings(db: Session) -> dict[str, Any]:
@@ -54,17 +84,15 @@ class ScanPipeline:
             target_strategies = strategies or rt_cfg["active_strategies"]
             llm_cfg = resolve_active_llm_config(db)
             effective_top_n = top_n or rt_cfg["top_n_pairs"]
+            strategy_profiles = _resolve_strategy_profiles(db, list(target_strategies))
 
             settings_snapshot = {
                 "scan_mode": rt_cfg["scan_mode"],
                 "active_strategies": list(target_strategies),
+                "strategy_timeframes": strategy_profiles,
                 "top_n_pairs": effective_top_n,
-                "htf_interval": rt_cfg["htf_interval"],
-                "ltf_interval": rt_cfg["ltf_interval"],
-                "kline_limit": rt_cfg["kline_limit"],
                 "scan_interval_minutes": rt_cfg["scan_interval_minutes"],
                 "tracker_interval_seconds": rt_cfg["tracker_interval_seconds"],
-                "setup_expiry_hours": rt_cfg["setup_expiry_hours"],
                 "min_24h_quote_volume": rt_cfg["min_24h_quote_volume"],
                 "max_24h_quote_volume": rt_cfg["max_24h_quote_volume"],
                 "min_atr_pct": rt_cfg["min_atr_pct"],
@@ -97,6 +125,7 @@ class ScanPipeline:
                     top_n=effective_top_n,
                     llm_cfg=llm_cfg,
                     rt_cfg=rt_cfg,
+                    strategy_profiles=strategy_profiles,
                 )
                 scan_run.status = "COMPLETED"
                 scan_run.finished_at = utcnow()
@@ -145,7 +174,21 @@ class ScanPipeline:
         top_n: int,
         llm_cfg: dict[str, str],
         rt_cfg: dict[str, Any],
+        strategy_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        profiles = strategy_profiles or _resolve_strategy_profiles(db, strategies)
+
+        # Deduplicate required kline intervals (with max needed kline_limit) across active strategies
+        interval_limits: dict[str, int] = {}
+        for strat in strategies:
+            prof = profiles.get(strat) or {
+                "htf": settings.htf_interval,
+                "ltf": settings.ltf_interval,
+                "kline_limit": settings.kline_limit,
+            }
+            for iv in (prof["htf"], prof["ltf"]):
+                interval_limits[iv] = max(interval_limits.get(iv, 0), int(prof["kline_limit"]))
+
         async with MexcPublicClient(
             base_url=rt_cfg["mexc_base_url"],
             proxy_url=rt_cfg["mexc_proxy_url"],
@@ -162,54 +205,21 @@ class ScanPipeline:
             scan_run.top_pairs_count = len(top_pairs)
             db.commit()
 
-            # Fetch HTF + LTF candles concurrently
+            # Fetch unique interval klines concurrently per pair (zero duplicate MEXC requests)
+            unique_intervals = list(interval_limits.items())
+
             async def fetch_pair_candles(pair: dict[str, Any]) -> dict[str, Any]:
                 sym = pair["symbol"]
-                htf_task = mexc.get_kline(
-                    sym, interval=rt_cfg["htf_interval"], limit=rt_cfg["kline_limit"]
+                fetched = await asyncio.gather(
+                    *(mexc.get_kline(sym, interval=iv, limit=lim) for iv, lim in unique_intervals)
                 )
-                ltf_task = mexc.get_kline(
-                    sym, interval=rt_cfg["ltf_interval"], limit=rt_cfg["kline_limit"]
-                )
-                htf, ltf = await asyncio.gather(htf_task, ltf_task)
-                return {**pair, "htf": htf, "ltf": ltf}
+                candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, fetched)}
+                return {**pair, "candles_by_iv": candles_by_iv}
 
             pair_results = await asyncio.gather(
                 *(fetch_pair_candles(p) for p in top_pairs),
                 return_exceptions=True,
             )
-
-        snapshots: list[dict[str, Any]] = []
-        for item in pair_results:
-            if isinstance(item, Exception):
-                log.warning("Failed fetching kline pair: %s", item)
-                continue
-            ok, reason, snap = prefilter_and_build_snapshot(
-                symbol=item["symbol"],
-                ticker=item["ticker"],
-                htf_candles=item["htf"],
-                ltf_candles=item["ltf"],
-                min_atr_pct=rt_cfg["min_atr_pct"],
-                max_atr_pct=rt_cfg["max_atr_pct"],
-                htf_interval=rt_cfg["htf_interval"],
-                ltf_interval=rt_cfg["ltf_interval"],
-            )
-            if ok and snap is not None:
-                snapshots.append(snap)
-            else:
-                db.add(
-                    ScanEvaluation(
-                        scan_run_id=scan_run.id,
-                        symbol=item["symbol"],
-                        strategy_used="PREFILTER",
-                        raw_decision="SKIPPED",
-                        rejection_reason=reason[:255],
-                        confidence=None,
-                    )
-                )
-
-        scan_run.prefiltered_count = len(snapshots)
-        db.commit()
 
         if not llm_cfg.get("api_key"):
             raise RuntimeError(
@@ -220,14 +230,55 @@ class ScanPipeline:
                 "Tidak ada strategi aktif. Aktifkan minimal 1 strategi di menu Settings."
             )
 
+        # Build & cache multi-timeframe snapshots per (symbol, htf, ltf)
+        snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
+        passed_symbols: set[str] = set()
+        ai_tasks: list[tuple[dict[str, Any], str]] = []
+
+        for item in pair_results:
+            if isinstance(item, Exception):
+                log.warning("Failed fetching kline pair: %s", item)
+                continue
+            sym = item["symbol"]
+            candles_by_iv = item["candles_by_iv"]
+            for strat in strategies:
+                prof = profiles[strat]
+                cache_key = (sym, prof["htf"], prof["ltf"])
+                if cache_key not in snapshot_cache:
+                    ok, reason, snap = prefilter_and_build_snapshot(
+                        symbol=sym,
+                        ticker=item["ticker"],
+                        htf_candles=candles_by_iv[prof["htf"]],
+                        ltf_candles=candles_by_iv[prof["ltf"]],
+                        min_atr_pct=rt_cfg["min_atr_pct"],
+                        max_atr_pct=rt_cfg["max_atr_pct"],
+                        htf_interval=prof["htf"],
+                        ltf_interval=prof["ltf"],
+                    )
+                    snapshot_cache[cache_key] = (ok, reason, snap)
+                    if not ok:
+                        db.add(
+                            ScanEvaluation(
+                                scan_run_id=scan_run.id,
+                                symbol=sym,
+                                strategy_used="PREFILTER",
+                                raw_decision="SKIPPED",
+                                rejection_reason=f"[{prof['htf']}/{prof['ltf']}] {reason}"[:255],
+                                confidence=None,
+                            )
+                        )
+                ok, _, snap = snapshot_cache[cache_key]
+                if ok and snap is not None:
+                    passed_symbols.add(sym)
+                    ai_tasks.append((snap, strat))
+
+        scan_run.prefiltered_count = len(passed_symbols)
+        db.commit()
+
         prompt_map = load_strategy_prompts_map(db, strategies)
         accepts_system_prompt = "system_prompt" in inspect.signature(analyze_market_snapshot).parameters
 
         llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
-        ai_tasks = []
-        for snap in snapshots:
-            for strat in strategies:
-                ai_tasks.append((snap, strat))
 
         async def run_one_ai(snap: dict[str, Any], strat: str):
             async with llm_sem:
@@ -251,7 +302,6 @@ class ScanPipeline:
         setups_created = 0
         ai_errors: list[str] = []
         now = utcnow()
-        expires_at = now + timedelta(hours=rt_cfg["setup_expiry_hours"])
 
         for snap, strat, decision, raw_resp, err in ai_results:
             if err is not None or decision is None:
@@ -289,6 +339,7 @@ class ScanPipeline:
                 )
                 continue
 
+            strat_expiry_hours = profiles.get(strat, {}).get("expiry_hours", settings.setup_expiry_hours)
             setup = TradeSetup(
                 scan_run_id=scan_run.id,
                 symbol=normalized.symbol,
@@ -306,7 +357,7 @@ class ScanPipeline:
                 invalidation_reason=normalized.invalidation_reason,
                 rationale=normalized.rationale,
                 status="OPEN",
-                expires_at=expires_at,
+                expires_at=now + timedelta(hours=int(strat_expiry_hours)),
                 features_snapshot=snap,
                 ai_payload=normalized.model_dump(),
             )
@@ -329,7 +380,7 @@ class ScanPipeline:
             "llm_model": llm_cfg["model_id"],
             "total_contracts": total_contracts,
             "top_pairs": len(top_pairs),
-            "prefiltered_pairs": len(snapshots),
+            "prefiltered_pairs": len(passed_symbols),
             "ai_analyzed": ai_analyzed_count,
             "ai_errors": len(ai_errors),
             "setups_created": setups_created,

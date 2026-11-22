@@ -106,6 +106,7 @@ def validate_and_guard_setup(
             .filter(
                 TradeSetup.symbol == normalized.symbol,
                 TradeSetup.decision == normalized.decision,
+                TradeSetup.strategy_used == normalized.strategy_used,
                 TradeSetup.status.in_(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN"]),
             )
             .first()
@@ -114,7 +115,10 @@ def validate_and_guard_setup(
             return (
                 False,
                 _clear_execution_levels(normalized),
-                f"Duplicate OPEN setup already exists (#{existing_open.id}) for {normalized.symbol} {normalized.decision}",
+                (
+                    f"Duplicate OPEN setup already exists (#{existing_open.id}) "
+                    f"for {normalized.symbol} {normalized.decision} ({normalized.strategy_used})"
+                ),
             )
 
     return True, normalized, "APPROVED"

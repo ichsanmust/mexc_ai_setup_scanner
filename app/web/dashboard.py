@@ -212,10 +212,28 @@ def _ensure_schema_columns() -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     if "trade_setups" in table_names:
-        cols = {c["name"] for c in inspector.get_columns("trade_setups")}
-        if "manual_entry_price" not in cols:
-            with engine.begin() as conn:
+        cols = {c["name"]: c for c in inspector.get_columns("trade_setups")}
+        idxs = {idx["name"] for idx in inspector.get_indexes("trade_setups")}
+        with engine.begin() as conn:
+            if "manual_entry_price" not in cols:
                 conn.execute(text("ALTER TABLE trade_setups ADD COLUMN manual_entry_price DECIMAL(20, 8) NULL"))
+            if engine.dialect.name == "mysql":
+                su_type = str(cols.get("strategy_used", {}).get("type", "")).upper()
+                if "40" in su_type:
+                    conn.execute(text("ALTER TABLE trade_setups MODIFY COLUMN strategy_used VARCHAR(64) NOT NULL"))
+            if "idx_trade_setups_dup_lookup" not in idxs:
+                conn.execute(
+                    text(
+                        "CREATE INDEX idx_trade_setups_dup_lookup "
+                        "ON trade_setups (symbol, decision, strategy_used, status)"
+                    )
+                )
+    if "scan_evaluations" in table_names and engine.dialect.name == "mysql":
+        eval_cols = {c["name"]: c for c in inspector.get_columns("scan_evaluations")}
+        su_type = str(eval_cols.get("strategy_used", {}).get("type", "")).upper()
+        if "40" in su_type:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE scan_evaluations MODIFY COLUMN strategy_used VARCHAR(64) NOT NULL"))
     if "strategies" in table_names:
         strat_cols = {c["name"] for c in inspector.get_columns("strategies")}
         alter_ddls = [
@@ -380,18 +398,10 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
         _upsert_setting(db, "auto_scan_enabled", "true" if body.auto_scan_enabled else "false")
     if body.top_n_pairs is not None:
         _upsert_setting(db, "top_n_pairs", str(body.top_n_pairs))
-    if body.htf_interval is not None:
-        _upsert_setting(db, "htf_interval", body.htf_interval.strip())
-    if body.ltf_interval is not None:
-        _upsert_setting(db, "ltf_interval", body.ltf_interval.strip())
-    if body.kline_limit is not None:
-        _upsert_setting(db, "kline_limit", str(body.kline_limit))
     if body.scan_interval_minutes is not None:
         _upsert_setting(db, "scan_interval_minutes", str(body.scan_interval_minutes))
     if body.tracker_interval_seconds is not None:
         _upsert_setting(db, "tracker_interval_seconds", str(body.tracker_interval_seconds))
-    if body.setup_expiry_hours is not None:
-        _upsert_setting(db, "setup_expiry_hours", str(body.setup_expiry_hours))
     if body.active_strategies is not None:
         selected_upper = [s.strip().upper() for s in body.active_strategies if s.strip()]
         if not selected_upper:
@@ -1100,3 +1110,12 @@ def serve_dashboard():
     if index_file.exists():
         return FileResponse(str(index_file))
     return {"status": "online", "app": "mexc-ai-setup-scanner", "docs_url": "/docs"}
+
+
+@app.get("/flow", include_in_schema=False)
+def serve_flow_page():
+    """Serve interactive scan architecture & prompt audit page."""
+    flow_file = FRONTEND_DIR / "flow.html"
+    if flow_file.exists():
+        return FileResponse(str(flow_file))
+    raise HTTPException(status_code=404, detail="Halaman /flow tidak ditemukan.")
