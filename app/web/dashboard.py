@@ -843,9 +843,9 @@ async def get_symbol_chart_data(
         )
         for _, r in df.iterrows()
     ]
-    ema21 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema21"]), 8)) for _, r in df.iterrows()]
-    ema50 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema50"]), 8)) for _, r in df.iterrows()]
-    ema200 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema200"]), 8)) for _, r in df.iterrows()]
+    ema21 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema21"]), 10)) for _, r in df.iterrows()]
+    ema50 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema50"]), 10)) for _, r in df.iterrows()]
+    ema200 = [EMAPoint(time=int(r["time"]), value=round(float(r["ema200"]), 10)) for _, r in df.iterrows()]
     dss = [EMAPoint(time=int(r["time"]), value=round(float(r["dss"]), 2)) for _, r in df.iterrows()]
     dss_signal = [EMAPoint(time=int(r["time"]), value=round(float(r["dss_signal"]), 2)) for _, r in df.iterrows()]
 

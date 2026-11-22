@@ -176,12 +176,28 @@ function showToast(msg, isError = false) {
   setTimeout(() => el.classList.add("hidden"), 4500);
 }
 
+function inferDecimalPrecision(val) {
+  const n = Math.abs(Number(val));
+  if (!Number.isFinite(n) || n === 0) return 4;
+  if (n >= 1000) return 2;
+  if (n >= 10) return 3;
+  if (n >= 1) return 4;
+  // Hitung digit signifikan yang wajar tanpa notasi ilmiah (maks 10 desimal)
+  const str = n.toFixed(10).replace(/0+$/, "");
+  const dotIdx = str.indexOf(".");
+  const rawDec = dotIdx >= 0 ? str.length - dotIdx - 1 : 2;
+  const magFloor = n >= 0.01 ? 5 : n >= 0.0001 ? 6 : n >= 0.00001 ? 7 : n >= 0.000001 ? 8 : n >= 0.0000001 ? 9 : 10;
+  return Math.min(10, Math.max(magFloor, rawDec));
+}
+
 function fmtPrice(val) {
   if (val === null || val === undefined) return "-";
   const num = Number(val);
-  if (num >= 1000) return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  if (num >= 1) return num.toLocaleString("en-US", { maximumFractionDigits: 4 });
-  return num.toLocaleString("en-US", { maximumFractionDigits: 8 });
+  if (!Number.isFinite(num)) return "-";
+  if (Math.abs(num) >= 1000) return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (Math.abs(num) >= 1) return num.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  if (Math.abs(num) >= 0.001) return num.toLocaleString("en-US", { maximumFractionDigits: 8 });
+  return num.toLocaleString("en-US", { maximumFractionDigits: 10 });
 }
 
 function statusBadge(setupOrStatus, manualActionAt = null) {
@@ -712,7 +728,7 @@ function initChartIfNeeded() {
       rightOffset: 10,
       tickMarkFormatter: formatChartJakartaTickMark,
     },
-    rightPriceScale: { borderColor: "#dadde1", minimumWidth: 78, autoScale: true },
+    rightPriceScale: { borderColor: "#dadde1", minimumWidth: 96, autoScale: true },
   });
   state.candleSeries = state.chart.addCandlestickSeries({
     upColor: "#16a34a",
@@ -756,7 +772,7 @@ function initChartIfNeeded() {
       rightOffset: 10,
       tickMarkFormatter: formatChartJakartaTickMark,
     },
-    rightPriceScale: { borderColor: "#dadde1", autoScale: true, minimumWidth: 78 },
+    rightPriceScale: { borderColor: "#dadde1", autoScale: true, minimumWidth: 96 },
   });
   state.dssSeries = state.dssChart.addLineSeries({
     color: "#1877f2",
@@ -872,15 +888,37 @@ function scheduleOverlayRender() {
 function formatPositionPrice(val) {
   const n = Number(val);
   if (!Number.isFinite(n)) return "-";
-  if (n >= 1000) return n.toFixed(2);
-  if (n >= 1) return n.toFixed(4);
-  return n.toPrecision(6);
+  if (Math.abs(n) >= 1000) return n.toFixed(2);
+  if (Math.abs(n) >= 1) return n.toFixed(4);
+  const prec = inferDecimalPrecision(n);
+  return n.toFixed(prec).replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
 }
 
 function roundPositionPrice(val) {
   const n = Number(val);
   if (!Number.isFinite(n)) return n;
-  return Number(n.toFixed(n >= 1000 ? 2 : n >= 1 ? 4 : 8));
+  const prec = Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : Math.max(8, inferDecimalPrecision(n));
+  return Number(n.toFixed(Math.min(10, prec)));
+}
+
+function computeChartPriceFormat(candles, setup) {
+  const samples = [];
+  if (setup) {
+    [setup.entry_price, setup.manual_entry_price, setup.stop_loss, setup.take_profit].forEach((v) => {
+      if (Number.isFinite(Number(v)) && Number(v) > 0) samples.push(Number(v));
+    });
+  }
+  const tail = Array.isArray(candles) ? candles.slice(-20) : [];
+  for (const c of tail) {
+    if (c && Number.isFinite(Number(c.close)) && Number(c.close) > 0) samples.push(Number(c.close));
+    if (c && Number.isFinite(Number(c.low)) && Number(c.low) > 0) samples.push(Number(c.low));
+  }
+  const precision = samples.length
+    ? Math.max(...samples.map((s) => inferDecimalPrecision(s)))
+    : 4;
+  const clamped = Math.min(10, Math.max(2, precision));
+  const minMove = Number((10 ** -clamped).toFixed(clamped));
+  return { type: "price", precision: clamped, minMove };
 }
 
 const SETUP_BOX_ID = 0;
@@ -1048,7 +1086,7 @@ function renderPositionOverlay() {
   const ts = state.chart.timeScale();
   const cs = state.candleSeries;
   const chartEl = document.getElementById("candlestick-chart");
-  const plotW = Math.max(0, (typeof ts.width === "function" ? ts.width() : 0) || ((chartEl ? chartEl.clientWidth : 800) - 78));
+  const plotW = Math.max(0, (typeof ts.width === "function" ? ts.width() : 0) || ((chartEl ? chartEl.clientWidth : 800) - 96));
   const plotH = Math.max(0, (chartEl ? chartEl.clientHeight : 460) - 26);
   if (plotW > 0) overlay.style.width = `${plotW}px`;
   if (plotH > 0) overlay.style.height = `${plotH}px`;
@@ -1299,6 +1337,20 @@ async function renderSetupChart(setup, isLiveRefresh = false) {
     const showDss = document.getElementById("toggle-dss")?.checked ?? true;
 
     const latestCandle = candles.length ? candles[candles.length - 1] : null;
+    if (isNewContext || !isLiveRefresh) {
+      const priceFormat = computeChartPriceFormat(candles, setup);
+      state.candleSeries.applyOptions({ priceFormat });
+      state.ema21Series.applyOptions({ priceFormat });
+      state.ema50Series.applyOptions({ priceFormat });
+      state.ema200Series.applyOptions({ priceFormat });
+      state.chart.applyOptions({
+        localization: {
+          locale: "id-ID",
+          timeFormatter: formatChartJakartaTime,
+          priceFormatter: (p) => (Number.isFinite(p) ? Number(p).toFixed(priceFormat.precision) : ""),
+        },
+      });
+    }
     const canIncrementalUpdate =
       !isNewContext &&
       isLiveRefresh &&
@@ -2351,6 +2403,12 @@ async function addAIModel() {
 }
 
 function wireEvents() {
+  document.querySelectorAll("button[data-view-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchMainView(btn.dataset.viewTab || "scanner");
+    });
+  });
+
   document.querySelectorAll("#status-tabs .tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#status-tabs .tab").forEach((b) => b.classList.remove("active"));
@@ -2620,7 +2678,7 @@ function wireEvents() {
         const curPrice = state.candleSeries.coordinateToPrice(ev.clientY - curRect.top);
         const curLogical = state.chart.timeScale().coordinateToLogical(ev.clientX - curRect.left);
         const isLong = pos.side === "LONG";
-        const minGap = Math.max(orig.entry * 0.0005, 1e-8);
+        const minGap = Math.max(orig.entry * 0.0005, 1e-12);
 
         if (handle === "tp" && curPrice !== null) {
           pos.tp = roundPositionPrice(isLong ? Math.max(pos.entry + minGap, curPrice) : Math.min(pos.entry - minGap, curPrice));
@@ -2904,6 +2962,40 @@ function restartLiveChartTimer() {
   }
 }
 
+function switchMainView(viewName, updateHash = true) {
+  const target = viewName === "dashboard" ? "dashboard" : "scanner";
+  const scannerEl = document.getElementById("view-scanner");
+  const dashEl = document.getElementById("view-dashboard");
+  if (scannerEl) scannerEl.classList.toggle("hidden", target !== "scanner");
+  if (dashEl) dashEl.classList.toggle("hidden", target !== "dashboard");
+
+  document.querySelectorAll("button[data-view-tab]").forEach((btn) => {
+    const isAct = btn.dataset.viewTab === target;
+    btn.classList.toggle("active", isAct);
+    btn.setAttribute("aria-selected", isAct ? "true" : "false");
+  });
+
+  if (updateHash && window.history && typeof window.history.replaceState === "function") {
+    const nextHash = target === "dashboard" ? "#dashboard" : "#scanner";
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  }
+
+  requestAnimationFrame(() => {
+    if (target === "dashboard") {
+      if (state.strategyChart) state.strategyChart.resize();
+      else loadAnalytics();
+    } else if (state.chart) {
+      const container = document.getElementById("candlestick-chart");
+      if (container && container.clientWidth > 0) {
+        state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+      }
+      scheduleOverlayRender();
+    }
+  });
+}
+
 async function bootstrap() {
   const savedLiveMs = localStorage.getItem("mexc_live_chart_ms");
   if (savedLiveMs !== null) {
@@ -2913,7 +3005,12 @@ async function bootstrap() {
     }
   }
   wireEvents();
+  const initialView = window.location.hash === "#dashboard" ? "dashboard" : "scanner";
+  switchMainView(initialView, false);
   await Promise.all([loadStrategies(), loadHealthAndStatus(), loadAnalytics(), loadSetups()]);
+  if (initialView === "dashboard" && state.strategyChart) {
+    state.strategyChart.resize();
+  }
   setInterval(() => {
     loadHealthAndStatus();
     loadAnalytics();

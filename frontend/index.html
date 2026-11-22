@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261122k" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261122n" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -20,14 +20,19 @@
     </div>
 
     <div class="topbar-actions">
+      <nav class="topbar-nav" role="tablist" aria-label="Menu Utama">
+        <button type="button" class="nav-tab active" data-view-tab="scanner" role="tab" aria-selected="true">Scanner</button>
+        <button type="button" class="nav-tab" data-view-tab="dashboard" role="tab" aria-selected="false">Dashboard</button>
+      </nav>
       <div id="active-llm-pill" class="llm-pill" title="Provider & Model Aktif">
         <span class="dot"></span>
         <span id="active-llm-label">Loading AI...</span>
       </div>
-      <a href="/flow" class="btn btn-secondary" style="text-decoration:none;">Alur Scan</a>
       <button id="btn-open-ai-modal" class="btn btn-secondary">Settings &amp; AI Models</button>
       <button id="btn-run-tracker" class="btn btn-secondary">Check Outcomes</button>
       <button id="btn-run-scan" class="btn btn-primary">Run Scan Now</button>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <a href="/flow" class="btn btn-secondary nav-external-link" title="Buka halaman terpisah: diagram Alur Scan &amp; Audit Prompt">Alur Scan &#8599;</a>
     </div>
   </header>
 
@@ -40,39 +45,50 @@
       <button id="btn-dismiss-error" class="btn-icon" title="Tutup">&times;</button>
     </div>
 
-    <!-- KPI & Strategy Performance Row -->
-    <section class="analytics-grid">
-      <div class="kpi-grid">
-        <div class="card kpi-card">
-          <span class="kpi-label">Total Setups</span>
-          <strong id="kpi-total" class="kpi-value">0</strong>
+    <!-- View: Dashboard (KPI & Strategy Performance) -->
+    <div id="view-dashboard" class="hidden">
+      <section class="analytics-grid">
+        <div class="kpi-grid">
+          <div class="card kpi-card">
+            <span class="kpi-label">Total Setups</span>
+            <strong id="kpi-total" class="kpi-value">0</strong>
+            <small class="kpi-sub">Seluruh setup AI tersimpan</small>
+          </div>
+          <div class="card kpi-card" title="Gabungan setup OPEN (menunggu entry/hasil) + ENTRY_HIT (sudah entry, sedang dipantau ke TP/SL)">
+            <span class="kpi-label">Active OPEN</span>
+            <strong id="kpi-open" class="kpi-value text-accent">0</strong>
+            <small class="kpi-sub">Status <b>OPEN</b> + <b>ENTRY_HIT</b> aktif dipantau Tracker</small>
+          </div>
+          <div class="card kpi-card">
+            <span class="kpi-label">Win Rate (TP vs SL)</span>
+            <strong id="kpi-winrate" class="kpi-value text-green">0%</strong>
+            <small class="kpi-sub">HIT_TP &amp; CLOSED_TP dibanding SL/CL</small>
+          </div>
+          <div class="card kpi-card">
+            <span class="kpi-label">Avg R:R Ratio</span>
+            <strong id="kpi-rr" class="kpi-value">0.00</strong>
+            <small class="kpi-sub">Rata-rata Risk:Reward seluruh setup</small>
+          </div>
         </div>
-        <div class="card kpi-card">
-          <span class="kpi-label">Active OPEN</span>
-          <strong id="kpi-open" class="kpi-value text-accent">0</strong>
-        </div>
-        <div class="card kpi-card">
-          <span class="kpi-label">Win Rate (TP vs SL)</span>
-          <strong id="kpi-winrate" class="kpi-value text-green">0%</strong>
-        </div>
-        <div class="card kpi-card">
-          <span class="kpi-label">Avg R:R Ratio</span>
-          <strong id="kpi-rr" class="kpi-value">0.00</strong>
-        </div>
-      </div>
 
-      <div class="card strategy-chart-card">
-        <div class="card-header">
-          <h3>Performa &amp; Akurasi per Strategi</h3>
-          <span id="scanner-status-badge" class="badge badge-neutral">Idle</span>
+        <div class="card strategy-chart-card">
+          <div class="card-header">
+            <h3>Performa &amp; Akurasi per Strategi</h3>
+            <span id="scanner-status-badge" class="badge badge-neutral">Idle</span>
+          </div>
+          <div class="strategy-chart-wrap">
+            <canvas id="strategyChart"></canvas>
+          </div>
+          <div id="strategy-cards" class="strategy-mini-grid"></div>
         </div>
-        <div class="strategy-chart-wrap">
-          <canvas id="strategyChart"></canvas>
-        </div>
-        <div id="strategy-cards" class="strategy-mini-grid"></div>
+      </section>
+      <div class="dashboard-info-note">
+        <strong>Info Status OPEN pada Dashboard:</strong> Angka <b>Active OPEN</b> dan batang biru <b>OPEN</b> di grafik menghitung setup berstatus <code>OPEN</code> (baru hasil scan / menunggu harga menyentuh Entry atau TP/SL) ditambah <code>ENTRY_HIT</code> (harga sudah menyentuh Entry dan sedang berjalan menuju TP/SL) yang masih aktif dipantau Tracker. Setup yang sudah selesai (<code>HIT_TP</code>, <code>HIT_SL</code>, <code>EXPIRED</code>) maupun status manual (<code>MANUAL_TAKEN</code>, <code>MANUAL_SKIPPED</code>, <code>CLOSED_MANUAL_*</code>) tidak dihitung ke dalam <b>Active OPEN</b>.
       </div>
-    </section>
+    </div>
 
+    <!-- View: Scanner (Setups, Scan Runs, Chart & Setup Detail) -->
+    <div id="view-scanner">
     <!-- Middle Row: 2 Columns (Left: Setups List, Right: Recent Scan Runs List) -->
     <section class="middle-two-col">
       <div class="card setups-panel">
@@ -327,6 +343,7 @@
         </div>
       </div>
     </section>
+    </div>
   </main>
 
   <!-- Modal: Settings & AI Models -->
@@ -827,6 +844,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261122k"></script>
+  <script src="/static/app.js?v=20261122n"></script>
 </body>
 </html>
