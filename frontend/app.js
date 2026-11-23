@@ -1682,6 +1682,20 @@ function parseUtcEpochSec(isoStr) {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
 }
 
+function findCandleIdxAtOrBefore(candles, targetSec) {
+  if (!candles || !candles.length || !Number.isFinite(targetSec)) return -1;
+  if (Number(candles[0].time) > targetSec) return 0;
+  let matchIdx = 0;
+  for (let i = 0; i < candles.length; i += 1) {
+    if (Number(candles[i].time) <= targetSec) {
+      matchIdx = i;
+    } else {
+      break;
+    }
+  }
+  return matchIdx;
+}
+
 function buildSetupPositionBox(setup) {
   if (!setup) return null;
   const side = String(setup.decision).toUpperCase() === "SHORT" ? "SHORT" : "LONG";
@@ -1697,27 +1711,23 @@ function buildSetupPositionBox(setup) {
   const activeStatuses = new Set(["OPEN", "ENTRY_HIT", "EXTENDED", "MANUAL_TAKEN"]);
   const isFinished = !activeStatuses.has(String(setup.status || "").toUpperCase());
 
-  let startIdx = Math.max(0, state.chartBarsCount - 28);
+  let startIdx = Math.max(0, state.chartBarsCount - 1);
   if (setup.created_at && state.chartCandles.length) {
     const createdSec = parseUtcEpochSec(setup.created_at);
-    if (Number.isFinite(createdSec)) {
-      const idx = state.chartCandles.findIndex((c) => Number(c.time) >= createdSec);
-      if (idx >= 0) {
-        startIdx = isFinished
-          ? Math.min(idx, Math.max(0, state.chartCandles.length - 2))
-          : Math.min(idx, Math.max(0, state.chartCandles.length - 6));
-      }
+    const idx = findCandleIdxAtOrBefore(state.chartCandles, createdSec);
+    if (idx >= 0) {
+      startIdx = idx;
     }
   }
 
-  let endIdx = Math.max(startIdx + 18, state.chartBarsCount + 6);
+  let endIdx = Math.max(startIdx + 12, state.chartBarsCount + 6);
   if (isFinished && state.chartCandles.length) {
     const hist = Array.isArray(setup.status_history) ? setup.status_history : [];
     const lastHistAt = hist.length ? hist[hist.length - 1]?.at : null;
     const finalIso = setup.resolved_at || lastHistAt || setup.manual_action_at || setup.updated_at || setup.expires_at;
     const endedSec = parseUtcEpochSec(finalIso);
     if (Number.isFinite(endedSec)) {
-      const eIdx = state.chartCandles.findIndex((c) => Number(c.time) >= endedSec);
+      const eIdx = findCandleIdxAtOrBefore(state.chartCandles, endedSec);
       const resolvedBarIdx = eIdx >= 0 ? eIdx : state.chartCandles.length - 1;
       endIdx = Math.max(startIdx + 1, resolvedBarIdx);
     }
