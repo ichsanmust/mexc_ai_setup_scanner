@@ -457,13 +457,14 @@ async def test_extended_status_preserved_when_entry_touched_and_ignores_stale_ca
     assert s_ext_fresh.status_history[-1]["event"] == "ENTRY_HIT"
 
 
-def test_tracker_coarse_candle_defers_same_bar_limit_tp_and_keeps_overlapping_bucket():
+def test_tracker_coarse_candle_ignores_pre_creation_bar_and_defers_same_bar_limit_tp():
     from datetime import datetime, timedelta, timezone
 
     # Setup created at 12:07 UTC inside a Min15 bucket that started at 12:00 UTC
     t_open = datetime(2026, 1, 1, 12, 7, 0, tzinfo=timezone.utc).replace(tzinfo=None)
     bucket_1200 = int(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
     bucket_1215 = bucket_1200 + 900
+    bucket_1230 = bucket_1215 + 900
 
     setup_limit = _make_custom_setup(
         decision="LONG",
@@ -475,24 +476,28 @@ def test_tracker_coarse_candle_defers_same_bar_limit_tp_and_keeps_overlapping_bu
         created_at=t_open,
     )
 
-    # 1. Overlapping Min15 candle (12:00..12:15) hits BOTH entry (99.5) and TP (110.5) -> conservative ENTRY_HIT, not HIT_TP
+    # 1. Min15 bar that started BEFORE created_at (12:00 < 12:07) hitting SL must be ignored
+    # 2. Next Min15 bar (12:15) hitting BOTH entry (99.5) and TP (110.5) -> conservative ENTRY_HIT, not HIT_TP
     st, resolved = evaluate_setup_against_market(
         setup_limit,
         last_price=105.0,
-        candles_since_open=[{"time": bucket_1200, "open": 102.0, "high": 110.5, "low": 99.5}],
-        now=t_open + timedelta(minutes=8),
+        candles_since_open=[
+            {"time": bucket_1200, "open": 102.0, "high": 103.0, "low": 94.0},
+            {"time": bucket_1215, "open": 102.0, "high": 110.5, "low": 99.5},
+        ],
+        now=t_open + timedelta(minutes=16),
         candle_interval="Min15",
     )
     assert st == "ENTRY_HIT"
     assert resolved is None
 
-    # 2. Once ENTRY_HIT, subsequent candle hitting TP transitions to HIT_TP
+    # 3. Once ENTRY_HIT, subsequent candle (12:30) hitting TP transitions to HIT_TP
     setup_limit.status = "ENTRY_HIT"
     st2, resolved2 = evaluate_setup_against_market(
         setup_limit,
         last_price=111.0,
-        candles_since_open=[{"time": bucket_1215, "open": 105.0, "high": 111.5, "low": 104.0}],
-        now=t_open + timedelta(minutes=25),
+        candles_since_open=[{"time": bucket_1230, "open": 105.0, "high": 111.5, "low": 104.0}],
+        now=t_open + timedelta(minutes=30),
         candle_interval="Min15",
     )
     assert st2 == "HIT_TP"

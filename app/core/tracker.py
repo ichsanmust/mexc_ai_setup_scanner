@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import TradeSetup, utcnow
-from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
+from ..scanner.mexc_public import MexcPublicClient
 
 log = logging.getLogger(__name__)
 
@@ -119,19 +119,14 @@ def evaluate_setup_trace(
 
     since_dt, is_reactivated = _get_tracking_since_dt(setup)
     since_ts = _to_utc_ts(since_dt)
-    step_sec = INTERVAL_SECONDS_MAP.get(candle_interval, 60)
 
     for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
         c_ts = int(candle["time"])
-        if is_reactivated:
+        if is_reactivated or candle_interval != "Min1":
             if c_ts < since_ts:
                 continue
-        elif candle_interval == "Min1":
-            if c_ts < since_ts - 60:
-                continue
-        else:
-            if c_ts + step_sec <= since_ts:
-                continue
+        elif c_ts < since_ts - 60:
+            continue
         c_dt = _from_utc_ts(c_ts)
         high = float(candle["high"])
         low = float(candle["low"])
