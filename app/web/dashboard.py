@@ -6,14 +6,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
-from sqlalchemy import desc, inspect, text
+from sqlalchemy import asc, case, desc, func, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
@@ -51,6 +51,7 @@ from ..schemas import (
     ScanRunListResponse,
     ScanRunOut,
     ScanTriggerRequest,
+    RecentStatusChangeItem,
     SetupListResponse,
     SetupOut,
     SetupStatusUpdate,
@@ -117,6 +118,27 @@ def _build_strategy_map(db: Session) -> dict[str, Strategy]:
     return {r.name.strip().upper(): r for r in db.query(Strategy).all()}
 
 
+def _extract_run_strategy_profile(row: TradeSetup) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return (scan_run_settings, strategy_profile_from_run_snapshot) for a setup."""
+    scan_run = row.scan_run
+    scan_cfg = (
+        scan_run.settings_snapshot
+        if (scan_run is not None and isinstance(scan_run.settings_snapshot, dict))
+        else None
+    )
+    tf_map = scan_cfg.get("strategy_timeframes") if isinstance(scan_cfg, dict) else None
+    strat_key = (row.strategy_used or "").strip().upper()
+    run_strat_prof = None
+    if isinstance(tf_map, dict):
+        run_strat_prof = tf_map.get(row.strategy_used) or tf_map.get(strat_key)
+        if run_strat_prof is None:
+            for k, v in tf_map.items():
+                if str(k).strip().upper() == strat_key and isinstance(v, dict):
+                    run_strat_prof = v
+                    break
+    return scan_cfg, run_strat_prof if isinstance(run_strat_prof, dict) else None
+
+
 def _setup_to_out(
     row: TradeSetup,
     live_price: float | None = None,
@@ -129,20 +151,7 @@ def _setup_to_out(
         strat_row = db.query(Strategy).filter(Strategy.name == strat_key).first()
 
     scan_run = row.scan_run
-    scan_cfg = (
-        scan_run.settings_snapshot
-        if (scan_run is not None and isinstance(scan_run.settings_snapshot, dict))
-        else None
-    )
-    tf_map = scan_cfg.get("strategy_timeframes") if isinstance(scan_cfg, dict) else None
-    run_strat_prof = None
-    if isinstance(tf_map, dict):
-        run_strat_prof = tf_map.get(row.strategy_used) or tf_map.get(strat_key)
-        if run_strat_prof is None:
-            for k, v in tf_map.items():
-                if str(k).strip().upper() == strat_key and isinstance(v, dict):
-                    run_strat_prof = v
-                    break
+    scan_cfg, run_strat_prof = _extract_run_strategy_profile(row)
 
     holding_period = strat_row.holding_period if strat_row and strat_row.holding_period else None
     strategy_profile = {
@@ -297,6 +306,13 @@ def _ensure_schema_columns() -> None:
                         "ON trade_setups (symbol, decision, strategy_used, status)"
                     )
                 )
+            if "idx_trade_setups_updated_at" not in idxs:
+                conn.execute(
+                    text(
+                        "CREATE INDEX idx_trade_setups_updated_at "
+                        "ON trade_setups (updated_at)"
+                    )
+                )
     if "scan_evaluations" in table_names and engine.dialect.name == "mysql":
         eval_cols = {c["name"]: c for c in inspector.get_columns("scan_evaluations")}
         su_type = str(eval_cols.get("strategy_used", {}).get("type", "")).upper()
@@ -430,12 +446,27 @@ def get_scanner_status(db: Session = Depends(get_db)):
 
 @app.get("/api/scanner/runs", response_model=ScanRunListResponse)
 def list_scan_runs(
+    run_id: Optional[str] = Query(default=None),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    tz_offset_minutes: int = Query(default=-420, alias="tz_offset"),
     limit: int = Query(default=10, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """List persisted scan runs with limit/offset pagination."""
+    """List persisted scan runs with optional run_id, status, date range filters, and pagination."""
     query = db.query(ScanRun)
+    if run_id and run_id.strip():
+        clean_id = run_id.strip().lstrip("#").strip()
+        if clean_id:
+            if not clean_id.isdigit():
+                return ScanRunListResponse(items=[], total=0)
+            query = query.filter(ScanRun.id == int(clean_id))
+    if status_filter and status_filter.strip().upper() != "ALL":
+        query = query.filter(ScanRun.status == status_filter.strip().upper())
+    query = _apply_created_date_filter(query, start_date, end_date, tz_offset_minutes, column=ScanRun.started_at)
+
     total = query.count()
     rows = query.order_by(desc(ScanRun.id)).offset(offset).limit(limit).all()
     return ScanRunListResponse(
@@ -606,6 +637,111 @@ async def trigger_tracker_now(db: Session = Depends(get_db)):
 # --- Trade Setups Endpoints ---
 
 
+ACTIVE_SETUP_STATUSES = ("OPEN", "ENTRY_HIT", "EXTENDED", "MANUAL_TAKEN")
+
+
+def _extract_recent_status_changes(rows: list[TradeSetup], limit: int = 8) -> list[RecentStatusChangeItem]:
+    """Build latest non-CREATED status transitions sorted newest-first across setups."""
+    collected: list[tuple[datetime, int, RecentStatusChangeItem]] = []
+    for r in rows:
+        hist = r.status_history if isinstance(r.status_history, list) else []
+        latest_idx = None
+        for idx, h in enumerate(hist):
+            if isinstance(h, dict) and h.get("event") and h.get("event") != "CREATED":
+                latest_idx = idx
+        if latest_idx is not None:
+            ev = hist[latest_idx]
+            prev_status = "OPEN"
+            if latest_idx > 0 and isinstance(hist[latest_idx - 1], dict):
+                prev_status = hist[latest_idx - 1].get("status") or "OPEN"
+            to_status = ev.get("status") or r.status
+            at_str = ev.get("at") or (r.updated_at.isoformat() if r.updated_at else None)
+            sort_dt = r.updated_at or r.created_at
+            if at_str:
+                try:
+                    sort_dt = datetime.fromisoformat(str(at_str).replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    pass
+            collected.append(
+                (
+                    sort_dt,
+                    int(r.id),
+                    RecentStatusChangeItem(
+                        setup_id=r.id,
+                        symbol=r.symbol,
+                        decision=r.decision,
+                        from_status=prev_status,
+                        to_status=to_status,
+                        event=str(ev.get("event") or to_status),
+                        note=ev.get("note"),
+                        price=float(ev["price"]) if ev.get("price") is not None else None,
+                        at=at_str,
+                    ),
+                )
+            )
+        elif r.status != "OPEN" or r.entry_hit_at or r.missed_tp_at:
+            from_st = "ENTRY_HIT" if (r.entry_hit_at and r.status in ("HIT_TP", "HIT_SL", "EXPIRED")) else "OPEN"
+            at_dt = r.resolved_at or r.manual_action_at or r.entry_hit_at or r.missed_tp_at or r.updated_at
+            px = r.resolved_price if r.resolved_price is not None else r.missed_tp_price
+            collected.append(
+                (
+                    at_dt or r.created_at,
+                    int(r.id),
+                    RecentStatusChangeItem(
+                        setup_id=r.id,
+                        symbol=r.symbol,
+                        decision=r.decision,
+                        from_status=from_st,
+                        to_status=r.status,
+                        event="TP_BEFORE_ENTRY" if (r.missed_tp_at and r.status == "OPEN") else r.status,
+                        note=None,
+                        price=float(px) if px is not None else None,
+                        at=at_dt.isoformat() if at_dt else None,
+                    ),
+                )
+            )
+
+    collected.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in collected[:limit]]
+
+
+def _apply_created_date_filter(
+    query,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    tz_offset_minutes: int,
+    column=TradeSetup.created_at,
+):
+    """Apply inclusive local-date start/end bounds on the given UTC datetime column."""
+    s_clean = start_date.strip() if start_date and start_date.strip() else None
+    e_clean = end_date.strip() if end_date and end_date.strip() else None
+    if s_clean and e_clean and s_clean > e_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date tidak boleh lebih besar dari end_date.",
+        )
+    if s_clean:
+        try:
+            start_local = datetime.strptime(s_clean, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Format tanggal harus YYYY-MM-DD.",
+            ) from exc
+        query = query.filter(column >= start_local + timedelta(minutes=tz_offset_minutes))
+    if e_clean:
+        try:
+            end_local = datetime.strptime(e_clean, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Format tanggal harus YYYY-MM-DD.",
+            ) from exc
+        utc_end = end_local + timedelta(minutes=tz_offset_minutes) + timedelta(days=1)
+        query = query.filter(column < utc_end)
+    return query
+
+
 @app.get("/api/setups", response_model=SetupListResponse)
 async def list_setups(
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -613,38 +749,70 @@ async def list_setups(
     decision: Optional[str] = Query(default=None),
     symbol: Optional[str] = Query(default=None),
     date_filter: Optional[str] = Query(default=None, alias="date"),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
     tz_offset_minutes: int = Query(default=-420, alias="tz_offset"),
+    sort: str = Query(default="updated"),
     include_live_price: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """List persisted trade setups with optional status, strategy, symbol, and date filters."""
-    query = db.query(TradeSetup)
-    if status_filter and status_filter != "ALL":
-        query = query.filter(TradeSetup.status == status_filter)
+    """List persisted trade setups with optional status, strategy, symbol, date/range filters, and sort order."""
+    base_query = db.query(TradeSetup)
     if strategy and strategy != "ALL":
-        query = query.filter(TradeSetup.strategy_used == strategy)
+        base_query = base_query.filter(TradeSetup.strategy_used == strategy)
     if decision and decision != "ALL":
-        query = query.filter(TradeSetup.decision == decision)
+        base_query = base_query.filter(TradeSetup.decision == decision)
     if symbol:
-        query = query.filter(TradeSetup.symbol.ilike(f"%{symbol.strip().upper()}%"))
-    if date_filter and date_filter.strip():
-        try:
-            local_day = datetime.strptime(date_filter.strip(), "%Y-%m-%d")
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Format tanggal harus YYYY-MM-DD.",
-            ) from exc
-        utc_start = local_day + timedelta(minutes=tz_offset_minutes)
-        utc_end = utc_start + timedelta(days=1)
-        query = query.filter(TradeSetup.created_at >= utc_start, TradeSetup.created_at < utc_end)
+        base_query = base_query.filter(TradeSetup.symbol.ilike(f"%{symbol.strip().upper()}%"))
+    eff_start = start_date or date_filter
+    eff_end = end_date or date_filter
+    base_query = _apply_created_date_filter(base_query, eff_start, eff_end, tz_offset_minutes)
+
+    grouped_counts = (
+        base_query.with_entities(TradeSetup.status, func.count(TradeSetup.id))
+        .group_by(TradeSetup.status)
+        .all()
+    )
+    status_counts: dict[str, int] = {st: int(cnt) for st, cnt in grouped_counts}
+    status_counts["ALL"] = sum(status_counts.values())
+    status_counts["ACTIVE"] = sum(status_counts.get(st, 0) for st in ACTIVE_SETUP_STATUSES)
+
+    recent_candidates = (
+        base_query.order_by(desc(TradeSetup.updated_at), desc(TradeSetup.id))
+        .limit(25)
+        .all()
+    )
+    recent_changes = _extract_recent_status_changes(recent_candidates, limit=8)
+
+    query = base_query
+    if status_filter and status_filter != "ALL":
+        clean_st = status_filter.strip().upper()
+        if clean_st == "ACTIVE":
+            query = query.filter(TradeSetup.status.in_(ACTIVE_SETUP_STATUSES))
+        elif "," in clean_st:
+            parts = [p.strip() for p in clean_st.split(",") if p.strip()]
+            if parts:
+                query = query.filter(TradeSetup.status.in_(parts))
+        else:
+            query = query.filter(TradeSetup.status == clean_st)
+
+    sort_key = (sort or "updated").strip().lower()
+    if sort_key == "created":
+        order_clauses = (desc(TradeSetup.created_at), desc(TradeSetup.id))
+    elif sort_key == "expires":
+        active_rank = case((TradeSetup.status.in_(ACTIVE_SETUP_STATUSES), 0), else_=1)
+        order_clauses = (asc(active_rank), asc(TradeSetup.expires_at), desc(TradeSetup.id))
+    elif sort_key == "confidence":
+        order_clauses = (desc(TradeSetup.confidence), desc(TradeSetup.updated_at), desc(TradeSetup.id))
+    else:
+        order_clauses = (desc(TradeSetup.updated_at), desc(TradeSetup.id))
 
     total = query.count()
     rows = (
         query.options(joinedload(TradeSetup.scan_run))
-        .order_by(desc(TradeSetup.created_at), desc(TradeSetup.id))
+        .order_by(*order_clauses)
         .offset(offset)
         .limit(limit)
         .all()
@@ -663,7 +831,12 @@ async def list_setups(
 
     strat_map = _build_strategy_map(db)
     items = [_setup_to_out(r, live_price=ticker_map.get(r.symbol), strategy_map=strat_map) for r in rows]
-    return SetupListResponse(items=items, total=total)
+    return SetupListResponse(
+        items=items,
+        total=total,
+        status_counts=status_counts,
+        recent_changes=recent_changes,
+    )
 
 
 @app.get("/api/setups/{setup_id}", response_model=SetupOut)
@@ -727,23 +900,43 @@ def update_setup_manual_status(
             row.risk_reward_ratio = Decimal(f"{round(abs(eff_tp - eff_entry) / abs(eff_entry - eff_sl), 4):.4f}")
 
     now = utcnow()
+    _, run_prof = _extract_run_strategy_profile(row)
+    run_exp = run_prof.get("expiry_hours") if isinstance(run_prof, dict) else None
+    strat_row = db.query(Strategy).filter(Strategy.name == (row.strategy_used or "").strip().upper()).first()
+    strat_exp_hours = int(
+        run_exp
+        or (strat_row.suggested_expiry_hours if (strat_row and strat_row.suggested_expiry_hours) else 12)
+    )
     row.status = body.status
     note_clean = body.manual_notes.strip() if body.manual_notes is not None else (row.manual_notes or "")
 
-    def _append_hist(event: str, price: float | None, desc: str) -> None:
+    def _append_hist(event: str, price: float | None, desc: str, extra: dict[str, Any] | None = None) -> None:
         hist = ensure_created_history(row)
-        hist.append(
-            {
-                "at": now.isoformat(),
-                "event": event,
-                "status": body.status,
-                "price": round(float(price), 8) if price is not None else None,
-                "stop_loss": float(row.stop_loss),
-                "take_profit": float(row.take_profit),
-                "note": f"{desc} | {note_clean}".strip(" |") if note_clean else desc,
-            }
-        )
+        item: dict[str, Any] = {
+            "at": now.isoformat(),
+            "event": event,
+            "status": body.status,
+            "price": round(float(price), 8) if price is not None else None,
+            "stop_loss": float(row.stop_loss),
+            "take_profit": float(row.take_profit),
+            "note": f"{desc} | {note_clean}".strip(" |") if note_clean else desc,
+        }
+        if extra:
+            item.update(extra)
+        hist.append(item)
         row.status_history = hist
+
+    def _extend_if_expired() -> dict[str, Any] | None:
+        if row.expires_at and row.expires_at <= now:
+            ext_h = body.extend_hours if body.extend_hours is not None else strat_exp_hours
+            old_exp = row.expires_at
+            row.expires_at = now + timedelta(hours=ext_h)
+            return {
+                "extend_hours": ext_h,
+                "old_expires_at": old_exp.isoformat() if old_exp else None,
+                "new_expires_at": row.expires_at.isoformat(),
+            }
+        return None
 
     if body.status == "OPEN":
         row.manual_action_at = None
@@ -753,28 +946,48 @@ def update_setup_manual_status(
         row.entry_hit_at = None
         row.missed_tp_at = None
         row.missed_tp_price = None
-        if row.expires_at and row.expires_at <= now:
-            row.expires_at = now + timedelta(hours=12)
-        _append_hist("RESET_OPEN", float(row.entry_price), "Reset manual ke OPEN untuk pantau ulang")
+        ext_info = _extend_if_expired()
+        ext_txt = f" (+{ext_info['extend_hours']}j expiry strategi)" if ext_info else ""
+        _append_hist("RESET_OPEN", float(row.entry_price), f"Reset manual ke OPEN untuk pantau ulang{ext_txt}", ext_info)
     elif body.status == "ENTRY_HIT":
         row.entry_hit_at = row.entry_hit_at or now
         row.resolved_price = None
         row.resolved_at = None
-        if row.expires_at and row.expires_at <= now:
-            row.expires_at = now + timedelta(hours=12)
-        _append_hist("MANUAL_ENTRY_HIT", float(row.entry_price), "Ditandai ENTRY_HIT manual")
+        ext_info = _extend_if_expired()
+        ext_txt = f" (+{ext_info['extend_hours']}j expiry strategi)" if ext_info else ""
+        _append_hist("MANUAL_ENTRY_HIT", float(row.entry_price), f"Ditandai ENTRY_HIT manual{ext_txt}", ext_info)
+    elif body.status == "EXTENDED":
+        ext_h = body.extend_hours if body.extend_hours is not None else strat_exp_hours
+        old_exp = row.expires_at
+        base_dt = old_exp if (old_exp and old_exp > now) else now
+        row.expires_at = base_dt + timedelta(hours=ext_h)
+        row.resolved_price = None
+        row.resolved_at = None
+        if body.manual_entry_price is not None:
+            row.manual_entry_price = Decimal(f"{body.manual_entry_price:.8f}")
+        _append_hist(
+            "EXTENDED",
+            eff_entry,
+            f"Perpanjang expiry +{ext_h} jam (aturan strategi {row.strategy_used})",
+            {
+                "extend_hours": ext_h,
+                "old_expires_at": old_exp.isoformat() if old_exp else None,
+                "new_expires_at": row.expires_at.isoformat(),
+            },
+        )
     elif body.status == "MANUAL_TAKEN":
         row.manual_action_at = now
         row.resolved_price = None
         row.resolved_at = None
         if body.manual_entry_price is not None:
             row.manual_entry_price = Decimal(f"{body.manual_entry_price:.8f}")
-        if row.expires_at and row.expires_at <= now:
-            row.expires_at = now + timedelta(hours=12)
+        ext_info = _extend_if_expired()
+        ext_txt = f", extend +{ext_info['extend_hours']}j" if ext_info else ""
         _append_hist(
             "MANUAL_TAKEN",
             eff_entry,
-            f"Eksekusi manual (Entry {eff_entry}, SL {float(row.stop_loss)}, TP {float(row.take_profit)})",
+            f"Eksekusi manual (Entry {eff_entry}, SL {float(row.stop_loss)}, TP {float(row.take_profit)}{ext_txt})",
+            ext_info,
         )
     elif body.status == "MANUAL_SKIPPED":
         row.manual_action_at = now
@@ -794,6 +1007,7 @@ def update_setup_manual_status(
 
     if body.manual_notes is not None:
         row.manual_notes = body.manual_notes.strip()
+    row.updated_at = now
     db.commit()
     db.refresh(row)
     return _setup_to_out(row, db=db)
@@ -861,10 +1075,27 @@ async def get_symbol_chart_data(
     )
 
 
+def _has_setup_entered(s: TradeSetup) -> bool:
+    """Return True only if setup reached entry (system ENTRY_HIT, MARKET order, or manual execution)."""
+    if s.entry_hit_at is not None or s.manual_action_at is not None:
+        return True
+    if s.status in ("ENTRY_HIT", "MANUAL_TAKEN", "CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL"):
+        return True
+    if (s.entry_type or "").upper() == "MARKET" and s.status in ("HIT_TP", "HIT_SL"):
+        return True
+    return False
+
+
 @app.get("/api/analytics/strategies", response_model=AnalyticsSummaryResponse)
-def get_strategy_analytics(db: Session = Depends(get_db)):
-    """Aggregate win-rate, status counts, and average R:R per strategy."""
-    rows = db.query(TradeSetup).all()
+def get_strategy_analytics(
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    tz_offset_minutes: int = Query(default=-420, alias="tz_offset"),
+    db: Session = Depends(get_db),
+):
+    """Aggregate executed win-rate (excluding non-entry hits), no-entry stats, and R:R per strategy."""
+    query = _apply_created_date_filter(db.query(TradeSetup), start_date, end_date, tz_offset_minutes)
+    rows = query.all()
     strat_names = [s.name for s in db.query(Strategy).order_by(Strategy.id.asc()).all()]
     buckets: dict[str, list[TradeSetup]] = {k: [] for k in (strat_names or list(STRATEGY_MIN_RR.keys()))}
     for r in rows:
@@ -872,16 +1103,46 @@ def get_strategy_analytics(db: Session = Depends(get_db)):
 
     items: list[StrategyAnalyticsItem] = []
     total_tp = 0
+    total_tp_auto = 0
+    total_tp_closed = 0
     total_sl = 0
+    total_sl_auto = 0
+    total_sl_closed = 0
     total_open = 0
+    total_open_wait = 0
+    total_entry_hit_act = 0
+    total_extended_act = 0
+    total_taken_act = 0
+    total_sl_no_entry = 0
+    total_tp_no_entry = 0
+    total_exp = 0
+    total_skip = 0
     all_rrs: list[float] = []
 
     for strat_name, group in buckets.items():
-        open_c = sum(1 for s in group if s.status in ("OPEN", "ENTRY_HIT", "MANUAL_TAKEN"))
-        tp_c = sum(1 for s in group if s.status in ("HIT_TP", "CLOSED_MANUAL_TP"))
-        sl_c = sum(1 for s in group if s.status in ("HIT_SL", "CLOSED_MANUAL_CL"))
-        exp_c = sum(1 for s in group if s.status == "EXPIRED")
+        open_wait_c = sum(1 for s in group if s.status == "OPEN")
+        entry_hit_c = sum(1 for s in group if s.status == "ENTRY_HIT")
+        ext_c = sum(1 for s in group if s.status == "EXTENDED")
         taken_c = sum(1 for s in group if s.status == "MANUAL_TAKEN")
+        open_c = open_wait_c + entry_hit_c + ext_c + taken_c
+
+        tp_auto_c = sum(1 for s in group if s.status == "HIT_TP" and _has_setup_entered(s))
+        tp_closed_c = sum(1 for s in group if s.status == "CLOSED_MANUAL_TP")
+        tp_c = tp_auto_c + tp_closed_c
+
+        sl_auto_c = sum(1 for s in group if s.status == "HIT_SL" and _has_setup_entered(s))
+        sl_closed_c = sum(1 for s in group if s.status == "CLOSED_MANUAL_CL")
+        sl_c = sl_auto_c + sl_closed_c
+        sl_no_entry_c = sum(1 for s in group if s.status == "HIT_SL" and not _has_setup_entered(s))
+        tp_no_entry_c = sum(
+            1
+            for s in group
+            if (
+                (s.missed_tp_at is not None and s.entry_hit_at is None and s.manual_action_at is None)
+                or (s.status == "HIT_TP" and not _has_setup_entered(s))
+            )
+        )
+        exp_c = sum(1 for s in group if s.status == "EXPIRED")
         skip_c = sum(1 for s in group if s.status == "MANUAL_SKIPPED")
 
         decided = tp_c + sl_c
@@ -889,8 +1150,20 @@ def get_strategy_analytics(db: Session = Depends(get_db)):
         avg_rr = round(sum(float(s.risk_reward_ratio) for s in group) / len(group), 2) if group else 0.0
 
         total_tp += tp_c
+        total_tp_auto += tp_auto_c
+        total_tp_closed += tp_closed_c
         total_sl += sl_c
+        total_sl_auto += sl_auto_c
+        total_sl_closed += sl_closed_c
         total_open += open_c
+        total_open_wait += open_wait_c
+        total_entry_hit_act += entry_hit_c
+        total_extended_act += ext_c
+        total_taken_act += taken_c
+        total_sl_no_entry += sl_no_entry_c
+        total_tp_no_entry += tp_no_entry_c
+        total_exp += exp_c
+        total_skip += skip_c
         all_rrs.extend(float(s.risk_reward_ratio) for s in group)
 
         items.append(
@@ -898,8 +1171,17 @@ def get_strategy_analytics(db: Session = Depends(get_db)):
                 strategy_used=strat_name,
                 total_setups=len(group),
                 open_count=open_c,
+                open_waiting_count=open_wait_c,
+                entry_hit_active_count=entry_hit_c,
+                extended_active_count=ext_c,
                 hit_tp_count=tp_c,
+                hit_tp_auto_count=tp_auto_c,
+                closed_manual_tp_count=tp_closed_c,
                 hit_sl_count=sl_c,
+                hit_sl_auto_count=sl_auto_c,
+                closed_manual_cl_count=sl_closed_c,
+                sl_no_entry_count=sl_no_entry_c,
+                tp_no_entry_count=tp_no_entry_c,
                 expired_count=exp_c,
                 manual_taken_count=taken_c,
                 manual_skipped_count=skip_c,
@@ -916,6 +1198,21 @@ def get_strategy_analytics(db: Session = Depends(get_db)):
     return AnalyticsSummaryResponse(
         total_setups=len(rows),
         open_count=total_open,
+        total_open_waiting_count=total_open_wait,
+        total_entry_hit_active_count=total_entry_hit_act,
+        total_extended_active_count=total_extended_act,
+        total_manual_taken_count=total_taken_act,
+        total_tp_count=total_tp,
+        total_hit_tp_auto_count=total_tp_auto,
+        total_closed_manual_tp_count=total_tp_closed,
+        total_sl_count=total_sl,
+        total_hit_sl_auto_count=total_sl_auto,
+        total_closed_manual_cl_count=total_sl_closed,
+        total_decided_count=overall_decided,
+        total_sl_no_entry_count=total_sl_no_entry,
+        total_tp_no_entry_count=total_tp_no_entry,
+        total_expired_count=total_exp,
+        total_skipped_count=total_skip,
         overall_win_rate_pct=overall_wr,
         overall_avg_rr=overall_rr,
         strategies=items,

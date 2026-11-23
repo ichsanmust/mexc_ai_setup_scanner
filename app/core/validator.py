@@ -107,7 +107,7 @@ def validate_and_guard_setup(
                 TradeSetup.symbol == normalized.symbol,
                 TradeSetup.decision == normalized.decision,
                 TradeSetup.strategy_used == normalized.strategy_used,
-                TradeSetup.status.in_(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN"]),
+                TradeSetup.status.in_(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN", "EXTENDED"]),
             )
             .first()
         )

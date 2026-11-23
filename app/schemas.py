@@ -13,6 +13,7 @@ EntryType = Literal["MARKET", "LIMIT", "NONE"]
 SetupStatusType = Literal[
     "OPEN",
     "ENTRY_HIT",
+    "EXTENDED",
     "HIT_TP",
     "HIT_SL",
     "EXPIRED",
@@ -93,11 +94,27 @@ class SetupOut(BaseModel):
     scan_run_settings: Optional[dict[str, Any]] = None
 
 
+class RecentStatusChangeItem(BaseModel):
+    """Latest status transition event surfaced in Daftar Setup recent activity strip."""
+
+    setup_id: int
+    symbol: str
+    decision: str
+    from_status: Optional[str] = None
+    to_status: str
+    event: str
+    note: Optional[str] = None
+    price: Optional[float] = None
+    at: Optional[str] = None
+
+
 class SetupListResponse(BaseModel):
     """Paginated list of trade setups."""
 
     items: list[SetupOut]
     total: int
+    status_counts: dict[str, int] = {}
+    recent_changes: list[RecentStatusChangeItem] = []
 
 
 class SetupStatusUpdate(BaseModel):
@@ -106,6 +123,7 @@ class SetupStatusUpdate(BaseModel):
     status: Literal[
         "OPEN",
         "ENTRY_HIT",
+        "EXTENDED",
         "MANUAL_TAKEN",
         "MANUAL_SKIPPED",
         "CLOSED_MANUAL_TP",
@@ -116,6 +134,7 @@ class SetupStatusUpdate(BaseModel):
     stop_loss: Optional[float] = Field(default=None, gt=0)
     take_profit: Optional[float] = Field(default=None, gt=0)
     resolved_price: Optional[float] = Field(default=None, gt=0)
+    extend_hours: Optional[int] = Field(default=None, ge=1, le=720)
     manual_notes: Optional[str] = Field(default=None, max_length=2000)
 
 
@@ -125,8 +144,17 @@ class StrategyAnalyticsItem(BaseModel):
     strategy_used: str
     total_setups: int
     open_count: int
+    open_waiting_count: int = 0
+    entry_hit_active_count: int = 0
+    extended_active_count: int = 0
     hit_tp_count: int
+    hit_tp_auto_count: int = 0
+    closed_manual_tp_count: int = 0
     hit_sl_count: int
+    hit_sl_auto_count: int = 0
+    closed_manual_cl_count: int = 0
+    sl_no_entry_count: int = 0
+    tp_no_entry_count: int = 0
     expired_count: int
     manual_taken_count: int
     manual_skipped_count: int
@@ -140,6 +168,21 @@ class AnalyticsSummaryResponse(BaseModel):
 
     total_setups: int
     open_count: int
+    total_open_waiting_count: int = 0
+    total_entry_hit_active_count: int = 0
+    total_extended_active_count: int = 0
+    total_manual_taken_count: int = 0
+    total_tp_count: int = 0
+    total_hit_tp_auto_count: int = 0
+    total_closed_manual_tp_count: int = 0
+    total_sl_count: int = 0
+    total_hit_sl_auto_count: int = 0
+    total_closed_manual_cl_count: int = 0
+    total_decided_count: int = 0
+    total_sl_no_entry_count: int = 0
+    total_tp_no_entry_count: int = 0
+    total_expired_count: int = 0
+    total_skipped_count: int = 0
     overall_win_rate_pct: float
     overall_avg_rr: float
     strategies: list[StrategyAnalyticsItem]

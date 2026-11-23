@@ -44,6 +44,31 @@ function formatJakartaTime(val = new Date(), withSeconds = true) {
   return `${d.toLocaleTimeString("en-GB", opts)} WIB`;
 }
 
+function formatJakartaShortTime(val) {
+  const d = parseBackendUtcDate(val);
+  if (!d) return "-";
+  return `${d.toLocaleTimeString("en-GB", {
+    timeZone: JAKARTA_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })} WIB`;
+}
+
+function formatRelativeTimeId(val) {
+  const d = parseBackendUtcDate(val);
+  if (!d) return "";
+  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diffSec < 15) return "Baru saja";
+  if (diffSec < 60) return `${diffSec} dtk lalu`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} mnt lalu`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} jam lalu`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} hr lalu`;
+}
+
 function formatChartJakartaTime(time) {
   if (typeof time !== "number" || !Number.isFinite(time)) return String(time || "");
   return formatJakartaDateTime(time * 1000, false);
@@ -112,6 +137,10 @@ async function apiRequest(endpoint, options = {}) {
 
 const state = {
   statusFilter: "ALL",
+  setupsSort: "updated",
+  knownSetupStatuses: {},
+  justChangedSetups: {},
+  hasLoadedSetupsOnce: false,
   selectedSetup: null,
   chartInterval: "Min15",
   drawMode: "normal",
@@ -209,6 +238,7 @@ function statusBadge(setupOrStatus, manualActionAt = null) {
   const map = {
     OPEN: { cls: "badge-open", tip: "Setup aktif dipantau otomatis oleh Tracker ke harga live MEXC" },
     ENTRY_HIT: { cls: "badge-entry-hit", tip: "Otomatis dari Tracker: harga pasar sudah menyentuh Entry, sedang menuju TP/SL" },
+    EXTENDED: { cls: "badge-extended", tip: "Expiry diperpanjang mengikuti strategi & tetap dipantau otomatis oleh Tracker" },
     HIT_TP: { cls: "badge-hit-tp", tip: "Harga menyentuh Take Profit terlebih dahulu (Win)" },
     HIT_SL: { cls: "badge-hit-sl", tip: "Harga menyentuh Stop Loss terlebih dahulu (Loss)" },
     EXPIRED: { cls: "badge-expired", tip: "Melewati batas Setup Expiry tanpa menyentuh TP/SL" },
@@ -248,6 +278,7 @@ async function loadHealthAndStatus() {
   const pill = document.getElementById("active-llm-pill");
   const label = document.getElementById("active-llm-label");
   label.textContent = `${health.active_provider} • ${health.active_model_id}${health.has_api_key ? "" : " (No API Key)"}`;
+  pill.title = `Provider & Model Aktif: ${label.textContent}`;
   pill.classList.toggle("warn", !health.has_api_key);
 
   const badge = document.getElementById("scanner-status-badge");
@@ -294,6 +325,7 @@ async function loadHealthAndStatus() {
     badge.title = "";
     hideErrorBanner();
   }
+  updateTopbarOverflow();
   return scannerStatus;
 }
 
@@ -319,15 +351,27 @@ function updatePaginationUI(prefix, page, pageSize, total) {
 }
 
 async function loadScanRuns() {
-  const offset = (state.runsPage - 1) * state.runsPageSize;
-  let data = await apiRequest(`/api/scanner/runs?limit=${state.runsPageSize}&offset=${offset}`);
+  const params = new URLSearchParams();
+  const { startDate, endDate } = runsRangePicker.getRange();
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  if (startDate || endDate) params.set("tz_offset", "-420");
+
+  const runIdVal = document.getElementById("filter-run-id")?.value.trim();
+  if (runIdVal) params.set("run_id", runIdVal);
+  const runStVal = document.getElementById("filter-run-status")?.value;
+  if (runStVal && runStVal !== "ALL") params.set("status", runStVal);
+
+  params.set("limit", String(state.runsPageSize));
+  params.set("offset", String((state.runsPage - 1) * state.runsPageSize));
+
+  let data = await apiRequest(`/api/scanner/runs?${params.toString()}`);
   state.runsTotal = data.total || 0;
   const maxPage = Math.max(1, Math.ceil(state.runsTotal / state.runsPageSize));
   if (state.runsPage > maxPage) {
     state.runsPage = maxPage;
-    data = await apiRequest(
-      `/api/scanner/runs?limit=${state.runsPageSize}&offset=${(state.runsPage - 1) * state.runsPageSize}`
-    );
+    params.set("offset", String((state.runsPage - 1) * state.runsPageSize));
+    data = await apiRequest(`/api/scanner/runs?${params.toString()}`);
   }
   renderScanRunsList(data.items || []);
   updatePaginationUI("runs", state.runsPage, state.runsPageSize, state.runsTotal);
@@ -535,24 +579,484 @@ function renderEvalTable() {
   });
 }
 
-async function loadAnalytics() {
-  const data = await apiRequest("/api/analytics/strategies");
-  document.getElementById("kpi-total").textContent = data.total_setups;
-  document.getElementById("kpi-open").textContent = data.open_count;
-  document.getElementById("kpi-winrate").textContent = `${data.overall_win_rate_pct}%`;
-  document.getElementById("kpi-rr").textContent = data.overall_avg_rr.toFixed(2);
+function getTodayJakartaYmd() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: JAKARTA_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
-  const miniGrid = document.getElementById("strategy-cards");
-  miniGrid.innerHTML = data.strategies
-    .map(
-      (s) => `
-      <div class="strategy-mini-item">
-        <strong>${s.strategy_used}</strong>
-        <div>Total: ${s.total_setups} | Win Rate: <b>${s.win_rate_pct}%</b></div>
-        <div>TP: ${s.hit_tp_count} / SL: ${s.hit_sl_count} / Avg R:R ${s.avg_rr}</div>
-      </div>`
-    )
-    .join("");
+function shiftYmd(ymd, deltaDays) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+function formatYmdDisplay(ymd) {
+  if (!ymd) return "-";
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+}
+
+function computeRangePreset(preset) {
+  const today = getTodayJakartaYmd();
+  const [y, m] = today.split("-").map(Number);
+  if (preset === "today") {
+    return { startDate: today, endDate: today };
+  }
+  if (preset === "last_7d") {
+    return { startDate: shiftYmd(today, -6), endDate: today };
+  }
+  if (preset === "this_month") {
+    return { startDate: `${y}-${String(m).padStart(2, "0")}-01`, endDate: today };
+  }
+  if (preset === "last_month") {
+    const prevLast = new Date(Date.UTC(y, m - 1, 0));
+    const py = prevLast.getUTCFullYear();
+    const pm = prevLast.getUTCMonth() + 1;
+    const pd = prevLast.getUTCDate();
+    return {
+      startDate: `${py}-${String(pm).padStart(2, "0")}-01`,
+      endDate: `${py}-${String(pm).padStart(2, "0")}-${String(pd).padStart(2, "0")}`,
+    };
+  }
+  if (preset === "last_3m") {
+    const startDt = new Date(Date.UTC(y, m - 3, 1));
+    return {
+      startDate: startDt.toISOString().slice(0, 10),
+      endDate: today,
+    };
+  }
+  return { startDate: null, endDate: null };
+}
+
+function createDateRangePicker(cfg) {
+  const rs = {
+    preset: cfg.defaultPreset || "this_month",
+    startDate: null,
+    endDate: null,
+    leftMonth: null,
+    pendingStart: null,
+    hoverDate: null,
+  };
+
+  const syncLeftMonth = () => {
+    const ref = rs.endDate || rs.startDate || getTodayJakartaYmd();
+    const [y, m] = ref.split("-").map(Number);
+    const leftDt = new Date(Date.UTC(y, m - 2, 1));
+    rs.leftMonth = { year: leftDt.getUTCFullYear(), month: leftDt.getUTCMonth() };
+  };
+
+  const renderUI = () => {
+    const labelEl = document.getElementById(cfg.labelId);
+    const popTextEl = document.getElementById(cfg.popTextId);
+    const hintEl = document.getElementById(cfg.hintId);
+    let txt = "Semua Waktu";
+    if (rs.pendingStart) {
+      txt = `${formatYmdDisplay(rs.pendingStart)}  \u2192  Pilih tgl akhir...`;
+    } else if (rs.startDate && rs.endDate) {
+      txt = `${formatYmdDisplay(rs.startDate)}  \u2192  ${formatYmdDisplay(rs.endDate)}`;
+    }
+    if (labelEl && !rs.pendingStart) labelEl.textContent = txt;
+    if (popTextEl) popTextEl.textContent = txt;
+    if (hintEl) {
+      hintEl.textContent = rs.pendingStart
+        ? "Klik tanggal kedua untuk menerapkan rentang."
+        : "Klik tanggal mulai lalu klik tanggal akhir.";
+    }
+    document.querySelectorAll(`[${cfg.presetAttr}]`).forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute(cfg.presetAttr) === rs.preset);
+    });
+  };
+
+  const closePopover = () => {
+    const pop = document.getElementById(cfg.popoverId);
+    const trigger = document.getElementById(cfg.triggerId);
+    rs.pendingStart = null;
+    rs.hoverDate = null;
+    if (pop) pop.classList.add("hidden");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    renderUI();
+  };
+
+  const renderCalendars = () => {
+    const grid = document.getElementById(cfg.gridId);
+    if (!grid) return;
+    if (!rs.leftMonth) syncLeftMonth();
+
+    const today = getTodayJakartaYmd();
+    const effStart = rs.pendingStart || rs.startDate;
+    const effEnd = rs.pendingStart ? rs.hoverDate || rs.pendingStart : rs.endDate;
+    const rangeMin = effStart && effEnd ? (effStart <= effEnd ? effStart : effEnd) : null;
+    const rangeMax = effStart && effEnd ? (effStart <= effEnd ? effEnd : effStart) : null;
+
+    const renderMonth = (year, monthIdx, navKind) => {
+      const monthTitle = new Date(Date.UTC(year, monthIdx, 1)).toLocaleDateString("en-US", {
+        timeZone: "UTC",
+        month: "short",
+        year: "numeric",
+      });
+      const firstDow = new Date(Date.UTC(year, monthIdx, 1)).getUTCDay();
+      const cells = [];
+      for (let i = 0; i < 42; i++) {
+        const dt = new Date(Date.UTC(year, monthIdx, 1 - firstDow + i));
+        const ymd = dt.toISOString().slice(0, 10);
+        const isOutside = dt.getUTCMonth() !== monthIdx;
+        const isStart = rangeMin && ymd === rangeMin;
+        const isEnd = rangeMax && ymd === rangeMax;
+        const inRange = rangeMin && rangeMax && ymd > rangeMin && ymd < rangeMax;
+        const isToday = ymd === today;
+        const cls = [
+          "cal-day",
+          isOutside ? "is-outside" : "",
+          inRange ? "in-range" : "",
+          isStart ? "is-start" : "",
+          isEnd ? "is-end" : "",
+          isToday ? "is-today" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        cells.push(`<button type="button" class="${cls}" data-cal-ymd="${ymd}">${dt.getUTCDate()}</button>`);
+      }
+
+      const leftBtn =
+        navKind === "prev"
+          ? `<button type="button" class="cal-nav-btn" data-cal-nav="prev" title="Bulan sebelumnya">&lsaquo;</button>`
+          : `<span></span>`;
+      const rightBtn =
+        navKind === "next"
+          ? `<button type="button" class="cal-nav-btn" data-cal-nav="next" title="Bulan berikutnya">&rsaquo;</button>`
+          : `<span></span>`;
+
+      return `
+        <div class="cal-month">
+          <div class="cal-month-head">
+            ${leftBtn}
+            <span>${monthTitle}</span>
+            ${rightBtn}
+          </div>
+          <div class="cal-weekdays">
+            <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+          </div>
+          <div class="cal-days">${cells.join("")}</div>
+        </div>`;
+    };
+
+    const ly = rs.leftMonth.year;
+    const lm = rs.leftMonth.month;
+    const rightDt = new Date(Date.UTC(ly, lm + 1, 1));
+    grid.innerHTML =
+      renderMonth(ly, lm, "prev") +
+      renderMonth(rightDt.getUTCFullYear(), rightDt.getUTCMonth(), "next");
+
+    grid.querySelector('[data-cal-nav="prev"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const d = new Date(Date.UTC(ly, lm - 1, 1));
+      rs.leftMonth = { year: d.getUTCFullYear(), month: d.getUTCMonth() };
+      renderCalendars();
+    });
+    grid.querySelector('[data-cal-nav="next"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const d = new Date(Date.UTC(ly, lm + 1, 1));
+      rs.leftMonth = { year: d.getUTCFullYear(), month: d.getUTCMonth() };
+      renderCalendars();
+    });
+
+    grid.querySelectorAll("button[data-cal-ymd]").forEach((btn) => {
+      btn.addEventListener("mouseenter", () => {
+        if (rs.pendingStart) {
+          rs.hoverDate = btn.dataset.calYmd;
+          grid.querySelectorAll("button[data-cal-ymd]").forEach((dBtn) => {
+            const ymd = dBtn.dataset.calYmd;
+            const lo = rs.pendingStart <= rs.hoverDate ? rs.pendingStart : rs.hoverDate;
+            const hi = rs.pendingStart <= rs.hoverDate ? rs.hoverDate : rs.pendingStart;
+            dBtn.classList.toggle("is-start", ymd === lo);
+            dBtn.classList.toggle("is-end", ymd === hi);
+            dBtn.classList.toggle("in-range", ymd > lo && ymd < hi);
+          });
+        }
+      });
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const clicked = btn.dataset.calYmd;
+        if (!rs.pendingStart) {
+          rs.pendingStart = clicked;
+          rs.hoverDate = clicked;
+          renderUI();
+          renderCalendars();
+        } else {
+          const s = rs.pendingStart <= clicked ? rs.pendingStart : clicked;
+          const en = rs.pendingStart <= clicked ? clicked : rs.pendingStart;
+          rs.pendingStart = null;
+          rs.hoverDate = null;
+          rs.preset = "custom";
+          rs.startDate = s;
+          rs.endDate = en;
+          renderUI();
+          renderCalendars();
+          closePopover();
+          if (cfg.onChange) cfg.onChange();
+        }
+      });
+    });
+  };
+
+  const applyPreset = (preset, shouldFetch = true) => {
+    const { startDate, endDate } = computeRangePreset(preset);
+    rs.preset = preset;
+    rs.startDate = startDate;
+    rs.endDate = endDate;
+    rs.pendingStart = null;
+    rs.hoverDate = null;
+    syncLeftMonth();
+    renderUI();
+    renderCalendars();
+    if (shouldFetch && cfg.onChange) cfg.onChange();
+  };
+
+  const wire = () => {
+    const wrap = document.getElementById(cfg.wrapId);
+    const trigger = document.getElementById(cfg.triggerId);
+    const pop = document.getElementById(cfg.popoverId);
+    if (!wrap || !trigger || !pop) return;
+
+    trigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.classList.contains("hidden");
+      if (willOpen) {
+        syncLeftMonth();
+        renderUI();
+        renderCalendars();
+        pop.classList.remove("hidden");
+        trigger.setAttribute("aria-expanded", "true");
+      } else {
+        closePopover();
+      }
+    });
+
+    document.getElementById(cfg.closeBtnId)?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closePopover();
+    });
+
+    document.getElementById(cfg.clearBtnId)?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      applyPreset("all", true);
+      closePopover();
+    });
+
+    document.querySelectorAll(`[${cfg.presetAttr}]`).forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        applyPreset(btn.getAttribute(cfg.presetAttr) || cfg.defaultPreset, true);
+        closePopover();
+      });
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!wrap.contains(e.target) && !pop.classList.contains("hidden")) {
+        closePopover();
+      }
+    });
+  };
+
+  return {
+    getRange: () => ({ startDate: rs.startDate, endDate: rs.endDate, preset: rs.preset }),
+    applyPreset,
+    wire,
+  };
+}
+
+const dashRangePicker = createDateRangePicker({
+  defaultPreset: "this_month",
+  wrapId: "dash-range-wrap",
+  triggerId: "btn-dash-range",
+  popoverId: "dash-range-popover",
+  labelId: "dash-range-label",
+  popTextId: "dash-popover-selected-text",
+  hintId: "dash-cal-hint",
+  gridId: "dash-cal-grid",
+  closeBtnId: "btn-cal-close",
+  clearBtnId: "btn-cal-clear",
+  presetAttr: "data-range-preset",
+  onChange: () => loadAnalytics(),
+});
+
+const setupsRangePicker = createDateRangePicker({
+  defaultPreset: "last_7d",
+  wrapId: "setups-range-wrap",
+  triggerId: "btn-setups-range",
+  popoverId: "setups-range-popover",
+  labelId: "setups-range-label",
+  popTextId: "setups-popover-selected-text",
+  hintId: "setups-cal-hint",
+  gridId: "setups-cal-grid",
+  closeBtnId: "btn-setups-cal-close",
+  clearBtnId: "btn-setups-cal-clear",
+  presetAttr: "data-setups-preset",
+  onChange: () => {
+    state.setupsPage = 1;
+    loadSetups();
+  },
+});
+
+const runsRangePicker = createDateRangePicker({
+  defaultPreset: "this_month",
+  wrapId: "runs-range-wrap",
+  triggerId: "btn-runs-range",
+  popoverId: "runs-range-popover",
+  labelId: "runs-range-label",
+  popTextId: "runs-popover-selected-text",
+  hintId: "runs-cal-hint",
+  gridId: "runs-cal-grid",
+  closeBtnId: "btn-runs-cal-close",
+  clearBtnId: "btn-runs-cal-clear",
+  presetAttr: "data-runs-preset",
+  onChange: () => {
+    state.runsPage = 1;
+    loadScanRuns();
+  },
+});
+
+async function loadAnalytics() {
+  const { startDate, endDate } = dashRangePicker.getRange();
+  const params = new URLSearchParams();
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  if (startDate || endDate) params.set("tz_offset", "-420");
+  const qs = params.toString();
+  const data = await apiRequest(`/api/analytics/strategies${qs ? `?${qs}` : ""}`);
+  const openWait = data.total_open_waiting_count ?? 0;
+  const entryHit = data.total_entry_hit_active_count ?? 0;
+  const extendedAct = data.total_extended_active_count ?? 0;
+  const manualTaken = data.total_manual_taken_count ?? 0;
+
+  document.getElementById("kpi-total").textContent = data.total_setups;
+  const totalSub = document.getElementById("kpi-total-sub");
+  if (totalSub) {
+    totalSub.innerHTML = `Avg R:R: <b>${data.overall_avg_rr.toFixed(2)}x</b> &bull; Expired: <b>${data.total_expired_count ?? 0}</b> &bull; Skip: <b>${data.total_skipped_count ?? 0}</b>`;
+  }
+
+  document.getElementById("kpi-open").textContent = data.open_count;
+  const openSub = document.getElementById("kpi-open-sub");
+  if (openSub) {
+    openSub.innerHTML = `Menunggu: <b>${openWait}</b> &bull; Entry Hit: <b>${entryHit}</b> &bull; Extended: <b>${extendedAct}</b> &bull; Taken: <b>${manualTaken}</b>`;
+  }
+
+  document.getElementById("kpi-winrate").textContent = `${data.overall_win_rate_pct}%`;
+  const wrSub = document.getElementById("kpi-winrate-sub");
+  if (wrSub) {
+    const tpAuto = data.total_hit_tp_auto_count ?? 0;
+    const tpClosed = data.total_closed_manual_tp_count ?? 0;
+    const slAuto = data.total_hit_sl_auto_count ?? 0;
+    const slClosed = data.total_closed_manual_cl_count ?? 0;
+    wrSub.innerHTML =
+      `Win: <b>${data.total_tp_count ?? 0}</b> <span class="subtitle-sm">(TP:${tpAuto} / ClTP:${tpClosed})</span> &bull; ` +
+      `Loss: <b>${data.total_sl_count ?? 0}</b> <span class="subtitle-sm">(SL:${slAuto} / ClCL:${slClosed})</span>`;
+  }
+
+  const noEntryEl = document.getElementById("kpi-no-entry");
+  if (noEntryEl) {
+    noEntryEl.textContent = `${data.total_sl_no_entry_count ?? 0} / ${data.total_tp_no_entry_count ?? 0}`;
+  }
+  const noEntrySub = document.getElementById("kpi-no-entry-sub");
+  if (noEntrySub) {
+    noEntrySub.innerHTML = `<span class="text-red">SL No Entry: <b>${data.total_sl_no_entry_count ?? 0}</b></span> &bull; <span class="text-green">TP No Entry: <b>${data.total_tp_no_entry_count ?? 0}</b></span>`;
+  }
+
+  const breakdownEl = document.getElementById("dash-active-breakdown");
+  if (breakdownEl) {
+    const activeTotal = Math.max(1, data.open_count || 0);
+    const items = [
+      {
+        badgeCls: "badge-open",
+        code: "OPEN",
+        label: "Menunggu Entry",
+        desc: "Harga belum menyentuh Entry",
+        count: openWait,
+        color: "#1877f2",
+      },
+      {
+        badgeCls: "badge-entry-hit",
+        code: "ENTRY_HIT",
+        label: "Sudah Entry (Sistem)",
+        desc: "Berjalan menuju TP atau SL",
+        count: entryHit,
+        color: "#0284c7",
+      },
+      {
+        badgeCls: "badge-extended",
+        code: "EXTENDED",
+        label: "Expiry Diperpanjang",
+        desc: "Tambahan waktu pantau strategi",
+        count: extendedAct,
+        color: "#0f766e",
+      },
+      {
+        badgeCls: "badge-manual",
+        code: "TAKEN",
+        label: "Diambil Manual",
+        desc: "Dieksekusi manual & dipantau Tracker",
+        count: manualTaken,
+        color: "#7c3aed",
+      },
+    ];
+    breakdownEl.innerHTML = items
+      .map((it) => {
+        const pct = data.open_count > 0 ? Math.round((it.count / activeTotal) * 100) : 0;
+        return `
+          <div class="active-breakdown-row">
+            <div class="active-breakdown-head">
+              <div><span class="badge ${it.badgeCls}">${it.code}</span> <strong>${it.label}</strong></div>
+              <strong>${it.count}</strong>
+            </div>
+            <div class="active-breakdown-track">
+              <div class="active-breakdown-fill" style="width:${pct}%; background:${it.color};"></div>
+            </div>
+            <div class="active-breakdown-meta">${it.desc}</div>
+          </div>`;
+      })
+      .join("");
+  }
+
+  const detailTbody = document.getElementById("dashboard-strategy-tbody");
+  if (detailTbody) {
+    detailTbody.innerHTML = data.strategies
+      .map(
+        (s) => `
+        <tr>
+          <td>
+            <strong>${escapeHtml(s.strategy_used)}</strong>
+            <div class="subtitle-sm">Total: <b>${s.total_setups}</b> setup</div>
+          </td>
+          <td>
+            <b>${s.open_count}</b>
+            <div class="subtitle-sm">O:${s.open_waiting_count ?? 0} H:${s.entry_hit_active_count ?? 0} E:${s.extended_active_count ?? 0} T:${s.manual_taken_count ?? 0}</div>
+          </td>
+          <td class="text-green">
+            <b>${s.hit_tp_count}</b>
+            <div class="subtitle-sm">HIT:${s.hit_tp_auto_count ?? 0} Cl:${s.closed_manual_tp_count ?? 0}</div>
+          </td>
+          <td class="text-red">
+            <b>${s.hit_sl_count}</b>
+            <div class="subtitle-sm">HIT:${s.hit_sl_auto_count ?? 0} Cl:${s.closed_manual_cl_count ?? 0}</div>
+          </td>
+          <td>
+            <span class="badge badge-expired" title="SL sebelum menyentuh Limit Entry">SL: ${s.sl_no_entry_count ?? 0}</span>
+            <span class="badge badge-missed-tp" title="TP duluan tanpa menyentuh Limit Entry">TP: ${s.tp_no_entry_count ?? 0}</span>
+          </td>
+          <td>${s.expired_count} / ${s.manual_skipped_count}</td>
+          <td>
+            <b>${s.win_rate_pct}%</b> <small class="subtitle-sm">(${s.hit_tp_count}/${s.decided_count})</small>
+            <div class="subtitle-sm">R:R <b>${Number(s.avg_rr).toFixed(2)}x</b></div>
+          </td>
+        </tr>`
+      )
+      .join("");
+  }
 
   const ctx = document.getElementById("strategyChart").getContext("2d");
   if (state.strategyChart) state.strategyChart.destroy();
@@ -561,10 +1065,11 @@ async function loadAnalytics() {
     data: {
       labels: data.strategies.map((s) => s.strategy_used),
       datasets: [
-        { label: "HIT_TP", data: data.strategies.map((s) => s.hit_tp_count), backgroundColor: "#42b72a" },
-        { label: "HIT_SL", data: data.strategies.map((s) => s.hit_sl_count), backgroundColor: "#e41e3f" },
-        { label: "OPEN", data: data.strategies.map((s) => s.open_count), backgroundColor: "#1877f2" },
-        { label: "EXPIRED", data: data.strategies.map((s) => s.expired_count), backgroundColor: "#f59e0b" },
+        { label: "Win (TP + Closed TP)", data: data.strategies.map((s) => s.hit_tp_count), backgroundColor: "#16a34a" },
+        { label: "Loss (SL + Closed CL)", data: data.strategies.map((s) => s.hit_sl_count), backgroundColor: "#e41e3f" },
+        { label: "Aktif", data: data.strategies.map((s) => s.open_count), backgroundColor: "#1877f2" },
+        { label: "No Entry (SL/TP)", data: data.strategies.map((s) => (s.sl_no_entry_count ?? 0) + (s.tp_no_entry_count ?? 0)), backgroundColor: "#f97316" },
+        { label: "Expired", data: data.strategies.map((s) => s.expired_count), backgroundColor: "#eab308" },
       ],
     },
     options: {
@@ -579,6 +1084,136 @@ async function loadAnalytics() {
   });
 }
 
+const ACTIVE_STATUS_SET = new Set(["OPEN", "ENTRY_HIT", "EXTENDED", "MANUAL_TAKEN"]);
+
+function switchStatusTab(targetStatus) {
+  const clean = targetStatus || "ALL";
+  state.statusFilter = clean;
+  document.querySelectorAll("#status-tabs .tab").forEach((b) => {
+    b.classList.toggle("active", b.dataset.status === clean);
+  });
+}
+
+function updateStatusTabCounts(counts = {}) {
+  document.querySelectorAll("#status-tabs .tab-count[data-count-for]").forEach((badgeEl) => {
+    const key = badgeEl.dataset.countFor;
+    const val = Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : 0;
+    badgeEl.textContent = String(val ?? 0);
+  });
+}
+
+function getLatestTransition(setup) {
+  const hist = Array.isArray(setup.status_history) ? setup.status_history : [];
+  let lastIdx = -1;
+  for (let i = 0; i < hist.length; i++) {
+    if (hist[i] && hist[i].event && hist[i].event !== "CREATED") {
+      lastIdx = i;
+    }
+  }
+  if (lastIdx >= 0) {
+    const ev = hist[lastIdx];
+    const prev = lastIdx > 0 && hist[lastIdx - 1] ? hist[lastIdx - 1] : null;
+    return {
+      fromStatus: (prev && prev.status) || "OPEN",
+      toStatus: ev.status || setup.status,
+      event: ev.event,
+      note: ev.note || "",
+      price: ev.price ?? null,
+      at: ev.at || setup.updated_at,
+    };
+  }
+  if (setup.status !== "OPEN" || setup.entry_hit_at || setup.missed_tp_at) {
+    return {
+      fromStatus: setup.entry_hit_at && ["HIT_TP", "HIT_SL", "EXPIRED"].includes(setup.status) ? "ENTRY_HIT" : "OPEN",
+      toStatus: setup.status,
+      event: setup.missed_tp_at && setup.status === "OPEN" ? "TP_BEFORE_ENTRY" : setup.status,
+      note: "",
+      price: setup.resolved_price ?? setup.missed_tp_price ?? null,
+      at: setup.resolved_at || setup.manual_action_at || setup.entry_hit_at || setup.missed_tp_at || setup.updated_at,
+    };
+  }
+  return null;
+}
+
+function isRecentlyChangedSetup(setup) {
+  const nowMs = Date.now();
+  const live = state.justChangedSetups[setup.id];
+  if (live && nowMs - live.atMs < 180000) return true;
+  const tr = getLatestTransition(setup);
+  if (!tr || !tr.at) return false;
+  const evDate = parseBackendUtcDate(tr.at);
+  return evDate ? nowMs - evDate.getTime() < 120000 : false;
+}
+
+async function focusSetupFromTransition(changeItem) {
+  if (!changeItem || !changeItem.setup_id) return;
+  const newStatus = changeItem.to_status || "ALL";
+  const hiddenByTab =
+    state.statusFilter !== "ALL" &&
+    state.statusFilter !== newStatus &&
+    !(state.statusFilter === "ACTIVE" && ACTIVE_STATUS_SET.has(newStatus));
+  if (hiddenByTab) {
+    switchStatusTab(ACTIVE_STATUS_SET.has(newStatus) ? "ACTIVE" : "ALL");
+    state.setupsPage = 1;
+  }
+  await loadSetups();
+  let target = state.setups.find((x) => x.id === changeItem.setup_id);
+  if (!target) {
+    try {
+      target = await apiRequest(`/api/setups/${changeItem.setup_id}`);
+    } catch (_err) {
+      return;
+    }
+  }
+  if (target) {
+    await selectSetup(target);
+    const rowEl = document.querySelector(`#setups-tbody tr[data-id="${target.id}"]`);
+    if (rowEl) {
+      rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+}
+
+function renderRecentChangesStrip(changes = []) {
+  const bar = document.getElementById("recent-changes-strip");
+  const wrap = document.getElementById("recent-changes-chips");
+  if (!bar || !wrap) return;
+  if (!changes.length) {
+    bar.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const nowMs = Date.now();
+  wrap.innerHTML = changes
+    .slice(0, 6)
+    .map((c, idx) => {
+      const evDt = parseBackendUtcDate(c.at);
+      const isLive = Boolean(state.justChangedSetups[c.setup_id] && nowMs - state.justChangedSetups[c.setup_id].atMs < 180000);
+      const isVeryRecent = isLive || (evDt ? nowMs - evDt.getTime() < 300000 : false);
+      const fromTxt = c.from_status && c.from_status !== c.to_status ? `${escapeHtml(c.from_status)} ` : "";
+      const arrowTxt = fromTxt ? `<span class="change-arrow">&rarr;</span> ` : "";
+      const toLabel = c.event === "TP_BEFORE_ENTRY" && c.to_status === "OPEN" ? "TP NO ENTRY" : c.to_status;
+      const rel = formatRelativeTimeId(c.at);
+      return `
+        <button type="button" class="change-chip ${isVeryRecent ? "is-fresh" : ""}" data-change-idx="${idx}" title="${escapeHtml(c.note || "Klik untuk fokus ke setup ini")}">
+          ${isVeryRecent ? '<span class="badge badge-fresh">BARU</span>' : ""}
+          <strong>${escapeHtml(c.symbol)}</strong>
+          <span>${fromTxt}${arrowTxt}<b>${escapeHtml(toLabel)}</b></span>
+          <span class="change-time">${escapeHtml(rel || formatJakartaShortTime(c.at))}</span>
+        </button>`;
+    })
+    .join("");
+
+  bar.classList.remove("hidden");
+  wrap.querySelectorAll("button[data-change-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const item = changes[Number(btn.dataset.changeIdx)];
+      if (item) focusSetupFromTransition(item);
+    });
+  });
+}
+
 async function loadSetups() {
   const params = new URLSearchParams();
   if (state.statusFilter !== "ALL") params.set("status", state.statusFilter);
@@ -586,11 +1221,13 @@ async function loadSetups() {
   if (strat !== "ALL") params.set("strategy", strat);
   const sym = document.getElementById("filter-symbol").value.trim();
   if (sym) params.set("symbol", sym);
-  const dateVal = document.getElementById("filter-date").value;
-  if (dateVal) {
-    params.set("date", dateVal);
-    params.set("tz_offset", "-420");
-  }
+  const { startDate: setupsStart, endDate: setupsEnd } = setupsRangePicker.getRange();
+  if (setupsStart) params.set("start_date", setupsStart);
+  if (setupsEnd) params.set("end_date", setupsEnd);
+  if (setupsStart || setupsEnd) params.set("tz_offset", "-420");
+  const sortEl = document.getElementById("sort-setups");
+  state.setupsSort = sortEl ? sortEl.value || "updated" : state.setupsSort;
+  params.set("sort", state.setupsSort);
 
   params.set("limit", String(state.setupsPageSize));
   params.set("offset", String((state.setupsPage - 1) * state.setupsPageSize));
@@ -603,18 +1240,55 @@ async function loadSetups() {
     params.set("offset", String((state.setupsPage - 1) * state.setupsPageSize));
     data = await apiRequest(`/api/setups?${params.toString()}`);
   }
+
+  // Detect live status transitions across refreshes or manual tracker runs
+  const liveTransitions = [];
+  const nextKnown = { ...state.knownSetupStatuses };
+  for (const s of data.items || []) {
+    const prevSt = state.knownSetupStatuses[s.id];
+    if (state.hasLoadedSetupsOnce && prevSt && prevSt !== s.status) {
+      state.justChangedSetups[s.id] = { fromStatus: prevSt, toStatus: s.status, atMs: Date.now() };
+      liveTransitions.push(`${s.symbol} (${prevSt} \u2192 ${s.status})`);
+    }
+    nextKnown[s.id] = s.status;
+  }
+  for (const ch of data.recent_changes || []) {
+    const prevSt = state.knownSetupStatuses[ch.setup_id];
+    if (state.hasLoadedSetupsOnce && prevSt && prevSt !== ch.to_status) {
+      if (!state.justChangedSetups[ch.setup_id] || state.justChangedSetups[ch.setup_id].toStatus !== ch.to_status) {
+        state.justChangedSetups[ch.setup_id] = { fromStatus: prevSt, toStatus: ch.to_status, atMs: Date.now() };
+        const txt = `${ch.symbol} (${prevSt} \u2192 ${ch.to_status})`;
+        if (!liveTransitions.includes(txt)) liveTransitions.push(txt);
+      }
+    }
+    nextKnown[ch.setup_id] = ch.to_status;
+  }
+  state.knownSetupStatuses = nextKnown;
+  state.hasLoadedSetupsOnce = true;
+
+  if (liveTransitions.length) {
+    const preview = liveTransitions.slice(0, 2).join(", ");
+    const extra = liveTransitions.length > 2 ? ` (+${liveTransitions.length - 2} lagi)` : "";
+    showToast(`Perubahan status: ${preview}${extra}`);
+  }
+
+  updateStatusTabCounts(data.status_counts || {});
+  renderRecentChangesStrip(data.recent_changes || []);
+
   state.setups = data.items;
   updatePaginationUI("setups", state.setupsPage, state.setupsPageSize, state.setupsTotal);
 
   const tbody = document.getElementById("setups-tbody");
   if (!data.items.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">Belum ada setup untuk filter ini.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Belum ada setup untuk filter ini.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = data.items
     .map((s) => {
       const selectedCls = state.selectedSetup && state.selectedSetup.id === s.id ? "selected" : "";
+      const fresh = isRecentlyChangedSetup(s);
+      const changedCls = fresh ? "just-changed" : "";
       const dirBadge = s.decision === "LONG" ? "badge-long" : "badge-short";
       const meLine = s.manual_entry_price ? `<div class="text-accent">ME: ${fmtPrice(s.manual_entry_price)}</div>` : "";
       const closeLine = s.resolved_price ? `<div>Close: ${fmtPrice(s.resolved_price)}</div>` : "";
@@ -633,10 +1307,50 @@ async function loadSetups() {
         tfParts.length || runChip
           ? `<div class="subtitle-sm">${escapeHtml(tfParts.join(" \u2022 "))}${runChip}</div>`
           : "";
+
+      const tr = getLatestTransition(s);
+      const updatedRef = (tr && tr.at) || s.updated_at || s.created_at;
+      const relUpdated = formatRelativeTimeId(updatedRef);
+      const hasStatusChanged = Boolean(tr);
+      const updatedTimeLine = hasStatusChanged
+        ? `<span class="setup-time-updated">Update: ${escapeHtml(relUpdated)} (${escapeHtml(formatJakartaShortTime(updatedRef))})</span>`
+        : `<span>Dibuat: ${escapeHtml(formatRelativeTimeId(s.created_at))} (${escapeHtml(formatJakartaShortTime(s.created_at))})</span>`;
+      const scanTimeLine = hasStatusChanged
+        ? `<span>Scan: ${escapeHtml(formatJakartaDateTime(s.created_at))}</span>`
+        : `<span>Tgl: ${escapeHtml(formatJakartaDateTime(s.created_at))}</span>`;
+      const expTimeLine =
+        ACTIVE_STATUS_SET.has(s.status) && s.expires_at
+          ? `<span>Exp: ${escapeHtml(formatJakartaDateTime(s.expires_at))}</span>`
+          : "";
+
+      let transitionHtml = `<div class="setup-last-transition setup-last-transition-sub">Menunggu sentuh Entry (${escapeHtml(s.entry_type || "LIMIT")})</div>`;
+      if (tr) {
+        const fromPart = tr.fromStatus && tr.fromStatus !== tr.toStatus ? `${escapeHtml(tr.fromStatus)} &rarr; ` : "";
+        const toLabel = tr.event === "TP_BEFORE_ENTRY" && tr.toStatus === "OPEN" ? "TP NO ENTRY" : tr.toStatus;
+        const noteShort = tr.note ? `<div class="setup-last-transition-sub">${escapeHtml(tr.note)}</div>` : "";
+        transitionHtml = `
+          <div class="setup-last-transition">
+            <strong>${fromPart}${escapeHtml(toLabel)}</strong> &bull; <span class="setup-last-transition-sub">${escapeHtml(relUpdated)}</span>
+            ${noteShort}
+          </div>`;
+      }
+
+      const freshTag = fresh ? `<span class="badge badge-fresh">BARU</span>` : "";
+
       return `
-        <tr class="${selectedCls}" data-id="${s.id}">
-          <td><strong>${s.symbol}</strong><br><small class="subtitle-sm">${formatJakartaDateTime(s.created_at)}</small></td>
-          <td><span class="badge ${dirBadge}">${s.decision}</span></td>
+        <tr class="${selectedCls} ${changedCls}" data-id="${s.id}">
+          <td>
+            <div class="setup-pair-head">
+              <strong>${escapeHtml(s.symbol)}</strong>
+              <span class="badge ${dirBadge}">${s.decision}</span>
+              ${freshTag}
+            </div>
+            <div class="setup-time-stack">
+              ${updatedTimeLine}
+              ${scanTimeLine}
+              ${expTimeLine}
+            </div>
+          </td>
           <td>
             <strong>${escapeHtml(s.strategy_used)}</strong>
             ${holdHtml}
@@ -649,9 +1363,14 @@ async function loadSetups() {
             <div class="text-green">TP: ${fmtPrice(s.take_profit)}</div>
             ${closeLine}
           </td>
-          <td>${Number(s.risk_reward_ratio).toFixed(2)}</td>
-          <td>${s.confidence}%</td>
-          <td>${statusBadge(s)}</td>
+          <td>
+            <strong>${Number(s.risk_reward_ratio).toFixed(2)}x</strong>
+            <div class="subtitle-sm">Conf: <b>${s.confidence}%</b></div>
+          </td>
+          <td>
+            ${statusBadge(s)}
+            ${transitionHtml}
+          </td>
           <td><button type="button" class="btn btn-secondary btn-sm" data-edit-setup="${s.id}">Edit</button></td>
         </tr>`;
     })
@@ -1321,7 +2040,9 @@ async function renderSetupChart(setup, isLiveRefresh = false) {
   if (!setup || state.chartRefreshing) return;
   state.chartRefreshing = true;
   initChartIfNeeded();
-  document.getElementById("chart-title").textContent = `${setup.symbol} (${setup.decision}) — ${setup.strategy_used}`;
+  const dirCls = setup.decision === "LONG" ? "badge-long" : "badge-short";
+  document.getElementById("chart-title").innerHTML =
+    `${escapeHtml(setup.symbol)} <span class="badge ${dirCls}">${escapeHtml(setup.decision)}</span> &mdash; ${escapeHtml(setup.strategy_used)}`;
 
   const isNewContext =
     state.renderedSetupId !== setup.id || state.renderedInterval !== state.chartInterval;
@@ -1573,11 +2294,14 @@ function renderSetupHistory(setup) {
       }
       const pxTxt = h.price ? ` @ ${fmtPrice(h.price)}` : "";
       const slTpTxt =
-        h.stop_loss != null && h.take_profit != null && (h.event === "MANUAL_TAKEN" || h.event === "RESET_OPEN")
+        h.stop_loss != null && h.take_profit != null && (h.event === "MANUAL_TAKEN" || h.event === "RESET_OPEN" || h.event === "EXTENDED")
           ? ` (SL: ${fmtPrice(h.stop_loss)}, TP: ${fmtPrice(h.take_profit)})`
           : "";
+      const expTxt = h.new_expires_at
+        ? ` &bull; <span class="text-accent">Expiry baru: ${escapeHtml(formatJakartaDateTime(h.new_expires_at))}</span>`
+        : "";
       rows.push(
-        `<div class="history-item"><div><span class="badge badge-neutral">${escapeHtml(h.event || h.status)}</span> <strong>${escapeHtml(h.note || h.status || "")}</strong>${pxTxt}${slTpTxt}</div><span class="subtitle-sm">${escapeHtml(timeTxt)}</span></div>`
+        `<div class="history-item"><div><span class="badge badge-neutral">${escapeHtml(h.event || h.status)}</span> <strong>${escapeHtml(h.note || h.status || "")}</strong>${pxTxt}${slTpTxt}${expTxt}</div><span class="subtitle-sm">${escapeHtml(timeTxt)}</span></div>`
       );
     }
   } else {
@@ -1634,6 +2358,9 @@ async function updateManualStatus(newStatus, overrides = null) {
     };
     if (stopLoss !== null) bodyObj.stop_loss = stopLoss;
     if (takeProfit !== null) bodyObj.take_profit = takeProfit;
+    if (overrides && overrides.extend_hours !== null && overrides.extend_hours !== undefined) {
+      bodyObj.extend_hours = overrides.extend_hours;
+    }
 
     const updated = await apiRequest(`/api/setups/${state.selectedSetup.id}/status`, {
       method: "PATCH",
@@ -1654,6 +2381,7 @@ function syncEditStatusFields(setup) {
   const statusVal = document.getElementById("edit-status-select").value;
   const entryWrap = document.getElementById("edit-manual-entry-wrap");
   const riskWrap = document.getElementById("edit-risk-levels-wrap");
+  const extendWrap = document.getElementById("edit-extend-hours-wrap");
   const closeWrap = document.getElementById("edit-close-price-wrap");
   const closeLabel = document.getElementById("edit-close-price-label");
   const closeInput = document.getElementById("edit-close-price");
@@ -1665,11 +2393,14 @@ function syncEditStatusFields(setup) {
   const showRiskLevels =
     statusVal === "MANUAL_TAKEN" ||
     statusVal === "ENTRY_HIT" ||
+    statusVal === "EXTENDED" ||
     statusVal === "OPEN";
+  const showExtend = statusVal === "EXTENDED";
   const showClose = statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL";
 
   entryWrap.classList.toggle("hidden", !showEntry);
   if (riskWrap) riskWrap.classList.toggle("hidden", !showRiskLevels);
+  if (extendWrap) extendWrap.classList.toggle("hidden", !showExtend);
   closeWrap.classList.toggle("hidden", !showClose);
 
   if (statusVal === "CLOSED_MANUAL_TP") {
@@ -1687,8 +2418,12 @@ function openEditStatusModal(setup) {
   document.getElementById("edit-status-title").textContent = `Edit Status: ${setup.symbol} (${setup.decision})`;
 
   const sel = document.getElementById("edit-status-select");
-  const allowed = new Set(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN", "MANUAL_SKIPPED", "CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL", "EXPIRED"]);
+  const allowed = new Set(["OPEN", "ENTRY_HIT", "EXTENDED", "MANUAL_TAKEN", "MANUAL_SKIPPED", "CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL", "EXPIRED"]);
   sel.value = allowed.has(setup.status) ? setup.status : "MANUAL_TAKEN";
+
+  const meta = resolveSetupStrategyMeta(setup);
+  const extInput = document.getElementById("edit-extend-hours");
+  if (extInput) extInput.value = meta.expiryHours || 12;
 
   document.getElementById("edit-manual-entry").value = setup.manual_entry_price ?? setup.entry_price ?? "";
   document.getElementById("edit-stop-loss").value = setup.stop_loss ?? "";
@@ -2409,15 +3144,32 @@ function wireEvents() {
     });
   });
 
+  const dashActiveBtn = document.getElementById("btn-dash-view-active");
+  if (dashActiveBtn) {
+    dashActiveBtn.addEventListener("click", () => {
+      switchStatusTab("ACTIVE");
+      state.setupsPage = 1;
+      switchMainView("scanner");
+      loadSetups();
+    });
+  }
+
   document.querySelectorAll("#status-tabs .tab").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll("#status-tabs .tab").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      state.statusFilter = btn.dataset.status;
+      switchStatusTab(btn.dataset.status);
       state.setupsPage = 1;
       loadSetups();
     });
   });
+
+  const sortSel = document.getElementById("sort-setups");
+  if (sortSel) {
+    sortSel.addEventListener("change", () => {
+      state.setupsSort = sortSel.value || "updated";
+      state.setupsPage = 1;
+      loadSetups();
+    });
+  }
 
   document.getElementById("btn-toggle-status-legend").addEventListener("click", () => {
     document.getElementById("status-legend-box").classList.toggle("hidden");
@@ -2427,15 +3179,6 @@ function wireEvents() {
   });
 
   document.getElementById("filter-strategy").addEventListener("change", () => {
-    state.setupsPage = 1;
-    loadSetups();
-  });
-  document.getElementById("filter-date").addEventListener("change", () => {
-    state.setupsPage = 1;
-    loadSetups();
-  });
-  document.getElementById("btn-clear-date").addEventListener("click", () => {
-    document.getElementById("filter-date").value = "";
     state.setupsPage = 1;
     loadSetups();
   });
@@ -2464,6 +3207,26 @@ function wireEvents() {
       state.setupsPage += 1;
       loadSetups();
     }
+  });
+
+  document.getElementById("filter-run-id")?.addEventListener("input", () => {
+    clearTimeout(window.__runIdDebounce);
+    window.__runIdDebounce = setTimeout(() => {
+      state.runsPage = 1;
+      loadScanRuns();
+    }, 250);
+  });
+  document.getElementById("filter-run-status")?.addEventListener("change", () => {
+    state.runsPage = 1;
+    loadScanRuns();
+  });
+  document.getElementById("btn-reset-run-filters")?.addEventListener("click", () => {
+    const idEl = document.getElementById("filter-run-id");
+    const stEl = document.getElementById("filter-run-status");
+    if (idEl) idEl.value = "";
+    if (stEl) stEl.value = "ALL";
+    state.runsPage = 1;
+    runsRangePicker.applyPreset("this_month", true);
   });
 
   document.getElementById("runs-per-page").addEventListener("change", (e) => {
@@ -2575,7 +3338,7 @@ function wireEvents() {
     ) {
       return;
     }
-    const anyModalOpen = ["ai-modal", "edit-status-modal", "scan-eval-modal"].some((id) => {
+    const anyModalOpen = ["edit-status-modal", "scan-eval-modal"].some((id) => {
       const el = document.getElementById(id);
       return el && !el.classList.contains("hidden");
     });
@@ -2779,7 +3542,14 @@ function wireEvents() {
       }
     }
 
-    const canSendRisk = statusVal === "MANUAL_TAKEN" || statusVal === "ENTRY_HIT" || statusVal === "OPEN";
+    const extRaw = document.getElementById("edit-extend-hours")?.value;
+    const extParsed = extRaw ? Number(extRaw) : null;
+    if (statusVal === "EXTENDED" && (!Number.isInteger(extParsed) || extParsed < 1 || extParsed > 720)) {
+      showToast("Durasi perpanjang expiry harus berupa angka bulat 1–720 jam.", true);
+      return;
+    }
+
+    const canSendRisk = statusVal === "MANUAL_TAKEN" || statusVal === "ENTRY_HIT" || statusVal === "EXTENDED" || statusVal === "OPEN";
     const ok = await updateManualStatus(statusVal, {
       manual_entry_price:
         statusVal === "MANUAL_TAKEN" || statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL"
@@ -2789,6 +3559,7 @@ function wireEvents() {
       take_profit: canSendRisk ? tpParsed : null,
       resolved_price:
         statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL" ? closeParsed : null,
+      extend_hours: statusVal === "EXTENDED" ? extParsed : null,
       manual_notes: document.getElementById("edit-manual-notes").value,
     });
     if (ok) {
@@ -2862,13 +3633,6 @@ function wireEvents() {
     }
   });
 
-  document.getElementById("btn-open-ai-modal").addEventListener("click", async () => {
-    document.getElementById("ai-modal").classList.remove("hidden");
-    await loadAIModalData(true);
-  });
-  document.getElementById("btn-close-ai-modal").addEventListener("click", () => {
-    document.getElementById("ai-modal").classList.add("hidden");
-  });
   document.querySelectorAll("[data-modal-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-modal-tab]").forEach((b) => b.classList.remove("active"));
@@ -2882,7 +3646,7 @@ function wireEvents() {
     radio.addEventListener("change", syncScanIntervalState);
   });
   document.getElementById("btn-modal-run-scan").addEventListener("click", () => {
-    document.getElementById("ai-modal").classList.add("hidden");
+    switchMainView("scanner");
     document.getElementById("btn-run-scan").click();
   });
   document.getElementById("btn-toggle-add-strategy").addEventListener("click", () => {
@@ -2962,12 +3726,86 @@ function restartLiveChartTimer() {
   }
 }
 
+const MAIN_VIEWS = ["scanner", "dashboard", "runs", "settings"];
+
+function updateTopbarOverflow() {
+  const topbar = document.querySelector(".topbar");
+  const nav = document.getElementById("topbar-nav");
+  const dropdown = document.getElementById("nav-overflow-dropdown");
+  const menu = document.getElementById("nav-overflow-menu");
+  const moreBtn = document.getElementById("btn-nav-more");
+  const actions = document.querySelector(".topbar-actions");
+  if (!topbar || !nav || !dropdown || !menu || !moreBtn || !actions) return;
+
+  // Restore all nav items and reset Menu toggle width before measuring fit
+  const allItems = Array.from(document.querySelectorAll("[data-nav-item]"));
+  allItems.forEach((el) => nav.insertBefore(el, dropdown));
+  dropdown.classList.add("hidden");
+  menu.classList.add("hidden");
+  moreBtn.setAttribute("aria-expanded", "false");
+  moreBtn.classList.remove("has-active");
+  moreBtn.innerHTML = "Menu &#9662;";
+  moreBtn.title = "Menu lainnya";
+
+  const isOverflowing = () =>
+    topbar.scrollWidth > topbar.clientWidth + 2 ||
+    actions.scrollWidth > actions.clientWidth + 2 ||
+    topbar.getBoundingClientRect().height > 76 ||
+    actions.getBoundingClientRect().height > 54;
+
+  // Move trailing items into dropdown (keep first item `Scanner` visible) until topbar fits in 1 row
+  const movable = allItems.slice(1);
+  while (movable.length > 0 && isOverflowing()) {
+    const popped = movable.pop();
+    dropdown.classList.remove("hidden");
+    menu.insertBefore(popped, menu.firstChild);
+  }
+
+  const hasItemsInMenu = menu.children.length > 0;
+  dropdown.classList.toggle("hidden", !hasItemsInMenu);
+
+  const activeInsideDropdown = Array.from(menu.querySelectorAll("[data-view-tab]")).find((b) =>
+    b.classList.contains("active")
+  );
+  moreBtn.classList.toggle("has-active", Boolean(activeInsideDropdown));
+  moreBtn.title = activeInsideDropdown
+    ? `Menu aktif: ${activeInsideDropdown.textContent.trim()}`
+    : "Menu lainnya";
+}
+
+function wireTopbarDropdown() {
+  const dropdown = document.getElementById("nav-overflow-dropdown");
+  const menu = document.getElementById("nav-overflow-menu");
+  const moreBtn = document.getElementById("btn-nav-more");
+  if (!dropdown || !menu || !moreBtn) return;
+
+  moreBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.classList.contains("hidden");
+    menu.classList.toggle("hidden", !willOpen);
+    moreBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!dropdown.contains(e.target)) {
+      menu.classList.add("hidden");
+      moreBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  const topbar = document.querySelector(".topbar");
+  if (topbar && typeof ResizeObserver === "function") {
+    new ResizeObserver(() => updateTopbarOverflow()).observe(topbar);
+  }
+  window.addEventListener("resize", updateTopbarOverflow);
+}
+
 function switchMainView(viewName, updateHash = true) {
-  const target = viewName === "dashboard" ? "dashboard" : "scanner";
-  const scannerEl = document.getElementById("view-scanner");
-  const dashEl = document.getElementById("view-dashboard");
-  if (scannerEl) scannerEl.classList.toggle("hidden", target !== "scanner");
-  if (dashEl) dashEl.classList.toggle("hidden", target !== "dashboard");
+  const target = MAIN_VIEWS.includes(viewName) ? viewName : "scanner";
+  MAIN_VIEWS.forEach((v) => {
+    const el = document.getElementById(`view-${v}`);
+    if (el) el.classList.toggle("hidden", v !== target);
+  });
 
   document.querySelectorAll("button[data-view-tab]").forEach((btn) => {
     const isAct = btn.dataset.viewTab === target;
@@ -2975,18 +3813,33 @@ function switchMainView(viewName, updateHash = true) {
     btn.setAttribute("aria-selected", isAct ? "true" : "false");
   });
 
+  // Close overflow dropdown menu after selecting a tab
+  const menu = document.getElementById("nav-overflow-menu");
+  const moreBtn = document.getElementById("btn-nav-more");
+  if (menu) menu.classList.add("hidden");
+  if (moreBtn) moreBtn.setAttribute("aria-expanded", "false");
+  updateTopbarOverflow();
+
   if (updateHash && window.history && typeof window.history.replaceState === "function") {
-    const nextHash = target === "dashboard" ? "#dashboard" : "#scanner";
+    const nextHash = `#${target}`;
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, "", nextHash);
     }
+  }
+
+  if (target === "settings") {
+    loadAIModalData(true);
+  } else if (target === "runs") {
+    loadScanRuns();
+  } else if (target === "scanner") {
+    loadStrategies();
   }
 
   requestAnimationFrame(() => {
     if (target === "dashboard") {
       if (state.strategyChart) state.strategyChart.resize();
       else loadAnalytics();
-    } else if (state.chart) {
+    } else if (target === "scanner" && state.chart) {
       const container = document.getElementById("candlestick-chart");
       if (container && container.clientWidth > 0) {
         state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
@@ -3005,9 +3858,18 @@ async function bootstrap() {
     }
   }
   wireEvents();
-  const initialView = window.location.hash === "#dashboard" ? "dashboard" : "scanner";
+  wireTopbarDropdown();
+  dashRangePicker.wire();
+  setupsRangePicker.wire();
+  runsRangePicker.wire();
+  dashRangePicker.applyPreset("this_month", false);
+  setupsRangePicker.applyPreset("last_7d", false);
+  runsRangePicker.applyPreset("this_month", false);
+  const hashView = (window.location.hash || "").replace(/^#/, "");
+  const initialView = MAIN_VIEWS.includes(hashView) ? hashView : "scanner";
   switchMainView(initialView, false);
   await Promise.all([loadStrategies(), loadHealthAndStatus(), loadAnalytics(), loadSetups()]);
+  updateTopbarOverflow();
   if (initialView === "dashboard" && state.strategyChart) {
     state.strategyChart.resize();
   }

@@ -73,6 +73,23 @@ def _append_setup_history(
     setup.status_history = [*ensure_created_history(setup), entry]
 
 
+def _get_tracking_since_dt(setup: TradeSetup) -> tuple[datetime, bool]:
+    """Return (since_dt, is_reactivated) so extended/reset setups aren't killed by stale candles."""
+    if setup.status == "MANUAL_TAKEN" and setup.manual_action_at:
+        return setup.manual_action_at, True
+    if setup.status in ("EXTENDED", "OPEN") and isinstance(setup.status_history, list):
+        for h in reversed(setup.status_history):
+            if isinstance(h, dict) and h.get("event") in ("EXTENDED", "RESET_OPEN") and h.get("at"):
+                try:
+                    ev_dt = datetime.fromisoformat(str(h["at"]).replace("Z", "+00:00"))
+                    if ev_dt.tzinfo is not None:
+                        ev_dt = ev_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return ev_dt, True
+                except ValueError:
+                    break
+    return setup.created_at, False
+
+
 def evaluate_setup_trace(
     setup: TradeSetup,
     last_price: float | None,
@@ -85,25 +102,26 @@ def evaluate_setup_trace(
     sl = float(setup.stop_loss)
     tp = float(setup.take_profit)
     direction = setup.decision
-    already_entered = setup.status in ("ENTRY_HIT", "MANUAL_TAKEN") or setup.entry_type == "MARKET"
+    already_entered = (
+        setup.status in ("ENTRY_HIT", "MANUAL_TAKEN")
+        or setup.entry_hit_at is not None
+        or setup.manual_action_at is not None
+        or setup.entry_type == "MARKET"
+    )
     entry_touched = already_entered
 
     detected_entry_dt: datetime | None = (
-        current_time if (setup.status == "OPEN" and setup.entry_type == "MARKET") else None
+        current_time if (setup.status in ("OPEN", "EXTENDED") and setup.entry_type == "MARKET") else None
     )
     detected_missed_tp_dt: datetime | None = None
     detected_missed_tp_price: float | None = None
 
-    since_dt = (
-        setup.manual_action_at
-        if setup.status == "MANUAL_TAKEN" and setup.manual_action_at
-        else setup.created_at
-    )
+    since_dt, is_reactivated = _get_tracking_since_dt(setup)
     since_ts = _to_utc_ts(since_dt)
 
     for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
         c_ts = int(candle["time"])
-        if c_ts < since_ts - 60:
+        if c_ts < (since_ts if is_reactivated else since_ts - 60):
             continue
         c_dt = _from_utc_ts(c_ts)
         high = float(candle["high"])
@@ -294,10 +312,10 @@ def _select_kline_params(oldest_since: datetime, now: datetime) -> tuple[str, in
 
 
 async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[str, int]:
-    """Evaluate all OPEN, ENTRY_HIT, and MANUAL_TAKEN setups against live MEXC market data."""
+    """Evaluate all OPEN, ENTRY_HIT, EXTENDED, and MANUAL_TAKEN setups against live MEXC market data."""
     open_setups = (
         db.query(TradeSetup)
-        .filter(TradeSetup.status.in_(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN"]))
+        .filter(TradeSetup.status.in_(["OPEN", "ENTRY_HIT", "MANUAL_TAKEN", "EXTENDED"]))
         .all()
     )
     if not open_setups:
@@ -308,11 +326,7 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
 
     oldest_by_symbol: dict[str, datetime] = {}
     for setup in open_setups:
-        since_dt = (
-            setup.manual_action_at
-            if setup.status == "MANUAL_TAKEN" and setup.manual_action_at
-            else setup.created_at
-        )
+        since_dt, _ = _get_tracking_since_dt(setup)
         prev = oldest_by_symbol.get(setup.symbol)
         if prev is None or _to_utc_ts(since_dt) < _to_utc_ts(prev):
             oldest_by_symbol[setup.symbol] = since_dt
@@ -356,22 +370,25 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
                 note="Harga menembus TP sebelum menyentuh Limit Entry",
                 at_dt=trace["missed_tp_dt"],
             )
+            setup.updated_at = now
 
-        if setup.status in ("OPEN", "ENTRY_HIT") and trace["entry_hit_dt"] is not None and setup.entry_hit_at is None:
+        if setup.status in ("OPEN", "ENTRY_HIT", "EXTENDED") and trace["entry_hit_dt"] is not None and setup.entry_hit_at is None:
             setup.entry_hit_at = trace["entry_hit_dt"]
             _append_setup_history(
                 setup,
                 event="ENTRY_HIT",
-                status="ENTRY_HIT",
+                status="EXTENDED" if setup.status == "EXTENDED" else "ENTRY_HIT",
                 price=float(setup.entry_price),
                 note=f"Harga menyentuh Entry ({setup.entry_type})",
                 at_dt=trace["entry_hit_dt"],
             )
+            setup.updated_at = now
 
         new_status = trace["new_status"]
         resolved_price = trace["resolved_price"]
         if new_status:
             setup.status = new_status
+            setup.updated_at = now
             if new_status == "ENTRY_HIT":
                 stats["entry_hit"] += 1
             else:

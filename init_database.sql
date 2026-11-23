@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS `scan_runs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 5. Setup Trading Valid (Manual Execution & Outcome Tracker)
+-- Status valid: OPEN, ENTRY_HIT, EXTENDED, HIT_TP, HIT_SL, EXPIRED,
+--               MANUAL_TAKEN, MANUAL_SKIPPED, CLOSED_MANUAL_TP, CLOSED_MANUAL_CL
 CREATE TABLE IF NOT EXISTS `trade_setups` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `scan_run_id` BIGINT NULL,
@@ -114,6 +116,7 @@ CREATE TABLE IF NOT EXISTS `trade_setups` (
   PRIMARY KEY (`id`),
   KEY `idx_trade_setups_symbol_status` (`symbol`, `status`),
   KEY `idx_trade_setups_created_at` (`created_at`),
+  KEY `idx_trade_setups_updated_at` (`updated_at`),
   KEY `idx_trade_setups_strategy_status` (`strategy_used`, `status`),
   KEY `idx_trade_setups_dup_lookup` (`symbol`, `decision`, `strategy_used`, `status`),
   KEY `fk_trade_setups_scan_run_id` (`scan_run_id`),

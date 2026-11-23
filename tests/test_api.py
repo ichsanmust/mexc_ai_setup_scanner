@@ -214,11 +214,68 @@ def test_setups_listing_manual_status_and_analytics(api_client, db_session):
     analytics = api_client.get("/api/analytics/strategies").json()
     assert analytics["total_setups"] == 2
     assert analytics["overall_win_rate_pct"] == 50.0
+    assert analytics["total_tp_count"] == 1
+    assert analytics["total_sl_count"] == 1
+
+    # Add SL No Entry (HIT_SL without entry) & TP No Entry (missed_tp_at without entry) -> must NOT pollute Win Rate
+    db.add_all(
+        [
+            TradeSetup(
+                symbol="DOGE_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("0.2000"),
+                stop_loss=Decimal("0.1900"),
+                take_profit=Decimal("0.2200"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=80,
+                invalidation_reason="Below 0.19",
+                rationale="Pullback test",
+                status="HIT_SL",
+                entry_hit_at=None,
+                manual_action_at=None,
+                expires_at=now + timedelta(hours=10),
+                features_snapshot={},
+                ai_payload={},
+            ),
+            TradeSetup(
+                symbol="ADA_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("0.5000"),
+                stop_loss=Decimal("0.4800"),
+                take_profit=Decimal("0.5400"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=81,
+                invalidation_reason="Below 0.48",
+                rationale="TP no entry test",
+                status="OPEN",
+                entry_hit_at=None,
+                manual_action_at=None,
+                missed_tp_at=now,
+                missed_tp_price=Decimal("0.5400"),
+                expires_at=now + timedelta(hours=10),
+                features_snapshot={},
+                ai_payload={},
+            ),
+        ]
+    )
+    db.commit()
+    no_entry_analytics = api_client.get("/api/analytics/strategies").json()
+    assert no_entry_analytics["total_setups"] == 4
+    assert no_entry_analytics["overall_win_rate_pct"] == 50.0
+    assert no_entry_analytics["total_decided_count"] == 2
+    assert no_entry_analytics["total_sl_no_entry_count"] == 1
+    assert no_entry_analytics["total_tp_no_entry_count"] == 1
 
     # Verify date filter on /api/setups
     today_str = now.strftime("%Y-%m-%d")
     yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    assert len(api_client.get(f"/api/setups?date={today_str}&tz_offset=0").json()["items"]) == 2
+    assert len(api_client.get(f"/api/setups?date={today_str}&tz_offset=0").json()["items"]) == 4
     assert len(api_client.get(f"/api/setups?date={yesterday_str}&tz_offset=0").json()["items"]) == 0
 
     # Verify paginated /api/scanner/runs and /api/setups limit/offset
@@ -229,7 +286,7 @@ def test_setups_listing_manual_status_and_analytics(api_client, db_session):
 
     setups_pag1 = api_client.get("/api/setups?limit=1&offset=0").json()
     setups_pag2 = api_client.get("/api/setups?limit=1&offset=1").json()
-    assert setups_pag1["total"] == 2
+    assert setups_pag1["total"] == 4
     assert len(setups_pag1["items"]) == 1
     assert len(setups_pag2["items"]) == 1
     assert setups_pag1["items"][0]["id"] != setups_pag2["items"][0]["id"]
@@ -519,4 +576,391 @@ def test_manual_reentry_overrides_sl_tp_on_hit_sl_setup(api_client, db_session):
     assert body["resolved_at"] is None
     assert body["risk_reward_ratio"] == 3.0
     assert body["status_history"][-1]["event"] == "MANUAL_TAKEN"
+
+
+def test_extended_status_extends_expiry_and_logs_history(api_client, db_session):
+    from app.models import ScanRun
+
+    db, _, _ = db_session
+    now = utcnow()
+    old_expiry = now - timedelta(hours=1)
+    run = ScanRun(
+        strategy="BREAKOUT_MOMENTUM",
+        llm_provider="commandcode",
+        llm_model="google/gemini-2.5-flash",
+        status="COMPLETED",
+        settings_snapshot={
+            "scan_mode": "MANUAL",
+            "strategy_timeframes": {
+                "BREAKOUT_MOMENTUM": {"htf": "Min60", "ltf": "Min15", "kline_limit": 250, "expiry_hours": 18}
+            },
+        },
+        started_at=now - timedelta(hours=20),
+        finished_at=now - timedelta(hours=20),
+    )
+    db.add(run)
+    db.flush()
+
+    exp_setup = TradeSetup(
+        scan_run_id=run.id,
+        symbol="ARB_USDT",
+        strategy_used="BREAKOUT_MOMENTUM",  # live table is 24h, but scan run snapshot recorded 18h
+        decision="LONG",
+        market_regime="TRENDING_UP",
+        entry_type="LIMIT",
+        entry_price=Decimal("1.0000"),
+        stop_loss=Decimal("0.9500"),
+        take_profit=Decimal("1.1000"),
+        risk_reward_ratio=Decimal("2.0"),
+        confidence=84,
+        invalidation_reason="Below 0.95",
+        rationale="Breakout retest",
+        status="EXPIRED",
+        resolved_price=Decimal("1.0100"),
+        resolved_at=now - timedelta(minutes=30),
+        expires_at=old_expiry,
+        features_snapshot={},
+        ai_payload={},
+    )
+    db.add(exp_setup)
+    db.commit()
+    db.refresh(exp_setup)
+
+    # Extend without explicit extend_hours -> prefers scan_run snapshot expiry_hours (18h) over current table (24h)
+    ext_resp = api_client.patch(
+        f"/api/setups/{exp_setup.id}/status",
+        json={"status": "EXTENDED", "manual_notes": "Menunggu lanjutan breakout"},
+    )
+    assert ext_resp.status_code == 200
+    data = ext_resp.json()
+    assert data["status"] == "EXTENDED"
+    assert data["resolved_at"] is None
+    assert data["resolved_price"] is None
+    assert data["status_history"][-1]["event"] == "EXTENDED"
+    assert data["status_history"][-1]["extend_hours"] == 18
+    assert data["status_history"][-1]["new_expires_at"] is not None
+    assert data["status_history"][-1]["old_expires_at"] is not None
+
+    # EXTENDED is counted inside Active OPEN analytics (not executed Win Rate)
+    analytics = api_client.get("/api/analytics/strategies").json()
+    assert analytics["total_extended_active_count"] == 1
+    assert analytics["open_count"] == 1
+    assert analytics["total_decided_count"] == 0
+
+
+def test_setups_list_sorting_active_filter_counts_and_recent_changes(api_client, db_session):
+    db, _, _ = db_session
+    now = utcnow()
+
+    older_setup = TradeSetup(
+        symbol="OLD_OPEN_USDT",
+        strategy_used="TREND_PULLBACK",
+        decision="LONG",
+        market_regime="TRENDING_UP",
+        entry_type="LIMIT",
+        entry_price=Decimal("10.00"),
+        stop_loss=Decimal("9.50"),
+        take_profit=Decimal("11.00"),
+        risk_reward_ratio=Decimal("2.0"),
+        confidence=75,
+        invalidation_reason="Below 9.5",
+        rationale="Older setup updated recently",
+        status="OPEN",
+        expires_at=now + timedelta(hours=10),
+        features_snapshot={},
+        ai_payload={},
+        created_at=now - timedelta(hours=5),
+        updated_at=now - timedelta(hours=5),
+    )
+    newer_setup = TradeSetup(
+        symbol="NEW_OPEN_USDT",
+        strategy_used="TREND_PULLBACK",
+        decision="SHORT",
+        market_regime="TRENDING_DOWN",
+        entry_type="LIMIT",
+        entry_price=Decimal("20.00"),
+        stop_loss=Decimal("21.00"),
+        take_profit=Decimal("18.00"),
+        risk_reward_ratio=Decimal("2.0"),
+        confidence=85,
+        invalidation_reason="Above 21",
+        rationale="Newer scan setup still untouched",
+        status="OPEN",
+        expires_at=now + timedelta(hours=12),
+        features_snapshot={},
+        ai_payload={},
+        created_at=now - timedelta(minutes=10),
+        updated_at=now - timedelta(minutes=10),
+    )
+    done_setup = TradeSetup(
+        symbol="DONE_TP_USDT",
+        strategy_used="BREAKOUT_MOMENTUM",
+        decision="LONG",
+        market_regime="TRENDING_UP",
+        entry_type="LIMIT",
+        entry_price=Decimal("5.00"),
+        stop_loss=Decimal("4.80"),
+        take_profit=Decimal("5.40"),
+        risk_reward_ratio=Decimal("2.0"),
+        confidence=80,
+        invalidation_reason="Below 4.8",
+        rationale="Hit TP",
+        status="HIT_TP",
+        entry_hit_at=now - timedelta(hours=2),
+        resolved_at=now - timedelta(hours=1),
+        resolved_price=Decimal("5.40"),
+        expires_at=now + timedelta(hours=6),
+        features_snapshot={},
+        ai_payload={},
+        created_at=now - timedelta(hours=4),
+        updated_at=now - timedelta(hours=1),
+    )
+    db.add_all([older_setup, newer_setup, done_setup])
+    db.commit()
+    db.refresh(older_setup)
+    older_id = older_setup.id
+
+    # Move older_setup from OPEN -> ENTRY_HIT via status endpoint
+    patch_resp = api_client.patch(
+        f"/api/setups/{older_id}/status",
+        json={"status": "ENTRY_HIT", "manual_notes": "Sentuh entry"},
+    )
+    assert patch_resp.status_code == 200
+
+    # Default sort=updated puts older_setup (just updated to ENTRY_HIT) at top ahead of newer_setup
+    by_updated = api_client.get("/api/setups").json()
+    assert by_updated["items"][0]["symbol"] == "OLD_OPEN_USDT"
+    assert by_updated["status_counts"]["ALL"] == 3
+    assert by_updated["status_counts"]["ACTIVE"] == 2
+    assert by_updated["status_counts"]["ENTRY_HIT"] == 1
+    assert by_updated["status_counts"]["OPEN"] == 1
+    assert by_updated["status_counts"]["HIT_TP"] == 1
+    assert any(
+        c["symbol"] == "OLD_OPEN_USDT" and c["from_status"] == "OPEN" and c["to_status"] == "ENTRY_HIT"
+        for c in by_updated["recent_changes"]
+    )
+
+    # sort=created preserves creation order (NEW_OPEN_USDT before OLD_OPEN_USDT)
+    by_created = api_client.get("/api/setups?sort=created").json()
+    assert [x["symbol"] for x in by_created["items"]] == ["NEW_OPEN_USDT", "DONE_TP_USDT", "OLD_OPEN_USDT"]
+
+    # status=ACTIVE includes OPEN and ENTRY_HIT, excludes HIT_TP
+    active_only = api_client.get("/api/setups?status=ACTIVE").json()
+    assert {x["symbol"] for x in active_only["items"]} == {"OLD_OPEN_USDT", "NEW_OPEN_USDT"}
+
+
+def test_analytics_includes_closed_manual_tp_and_cl_in_win_loss_breakdown(api_client, db_session):
+    db, _, _ = db_session
+    now = utcnow()
+    db.add_all(
+        [
+            TradeSetup(
+                symbol="M1_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("10"),
+                stop_loss=Decimal("9"),
+                take_profit=Decimal("12"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=80,
+                invalidation_reason="r",
+                rationale="r",
+                status="CLOSED_MANUAL_TP",
+                manual_action_at=now - timedelta(minutes=10),
+                resolved_price=Decimal("11.8"),
+                resolved_at=now - timedelta(minutes=5),
+                expires_at=now + timedelta(hours=5),
+                features_snapshot={},
+                ai_payload={},
+            ),
+            TradeSetup(
+                symbol="M2_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("20"),
+                stop_loss=Decimal("19"),
+                take_profit=Decimal("22"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=80,
+                invalidation_reason="r",
+                rationale="r",
+                status="CLOSED_MANUAL_CL",
+                manual_action_at=now - timedelta(minutes=8),
+                resolved_price=Decimal("19.2"),
+                resolved_at=now - timedelta(minutes=3),
+                expires_at=now + timedelta(hours=5),
+                features_snapshot={},
+                ai_payload={},
+            ),
+            TradeSetup(
+                symbol="A1_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("30"),
+                stop_loss=Decimal("28"),
+                take_profit=Decimal("34"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=85,
+                invalidation_reason="r",
+                rationale="r",
+                status="HIT_TP",
+                entry_hit_at=now - timedelta(minutes=15),
+                resolved_price=Decimal("34"),
+                resolved_at=now - timedelta(minutes=2),
+                expires_at=now + timedelta(hours=5),
+                features_snapshot={},
+                ai_payload={},
+            ),
+        ]
+    )
+    db.commit()
+
+    analytics = api_client.get("/api/analytics/strategies").json()
+    assert analytics["total_tp_count"] == 2
+    assert analytics["total_hit_tp_auto_count"] == 1
+    assert analytics["total_closed_manual_tp_count"] == 1
+    assert analytics["total_sl_count"] == 1
+    assert analytics["total_hit_sl_auto_count"] == 0
+    assert analytics["total_closed_manual_cl_count"] == 1
+    assert analytics["total_decided_count"] == 3
+    assert analytics["overall_win_rate_pct"] == 66.67
+
+    tp_row = next(s for s in analytics["strategies"] if s["strategy_used"] == "TREND_PULLBACK")
+    assert tp_row["hit_tp_count"] == 2
+    assert tp_row["hit_tp_auto_count"] == 1
+    assert tp_row["closed_manual_tp_count"] == 1
+    assert tp_row["hit_sl_count"] == 1
+    assert tp_row["closed_manual_cl_count"] == 1
+    assert tp_row["win_rate_pct"] == 66.67
+
+
+def test_analytics_date_range_filter(api_client, db_session):
+    db, _, _ = db_session
+    now = utcnow()
+    db.add_all(
+        [
+            TradeSetup(
+                symbol="THIS_MO_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("10"),
+                stop_loss=Decimal("9"),
+                take_profit=Decimal("12"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=80,
+                invalidation_reason="r",
+                rationale="r",
+                status="HIT_TP",
+                entry_hit_at=now - timedelta(hours=2),
+                resolved_price=Decimal("12"),
+                resolved_at=now - timedelta(hours=1),
+                expires_at=now + timedelta(hours=5),
+                features_snapshot={},
+                ai_payload={},
+                created_at=now - timedelta(hours=3),
+            ),
+            TradeSetup(
+                symbol="OLD_MO_USDT",
+                strategy_used="TREND_PULLBACK",
+                decision="LONG",
+                market_regime="TRENDING_UP",
+                entry_type="LIMIT",
+                entry_price=Decimal("20"),
+                stop_loss=Decimal("19"),
+                take_profit=Decimal("22"),
+                risk_reward_ratio=Decimal("2.0"),
+                confidence=80,
+                invalidation_reason="r",
+                rationale="r",
+                status="HIT_SL",
+                entry_hit_at=now - timedelta(days=45),
+                resolved_price=Decimal("19"),
+                resolved_at=now - timedelta(days=45),
+                expires_at=now - timedelta(days=44),
+                features_snapshot={},
+                ai_payload={},
+                created_at=now - timedelta(days=45),
+            ),
+        ]
+    )
+    db.commit()
+
+    today_str = now.strftime("%Y-%m-%d")
+    month_start_str = now.replace(day=1).strftime("%Y-%m-%d")
+    filtered = api_client.get(
+        f"/api/analytics/strategies?start_date={month_start_str}&end_date={today_str}&tz_offset=0"
+    ).json()
+    assert filtered["total_setups"] == 1
+    assert filtered["total_tp_count"] == 1
+    assert filtered["total_sl_count"] == 0
+    assert filtered["overall_win_rate_pct"] == 100.0
+
+    all_time = api_client.get("/api/analytics/strategies").json()
+    assert all_time["total_setups"] == 2
+    assert all_time["overall_win_rate_pct"] == 50.0
+
+    # /api/setups also accepts start_date & end_date range filters
+    setups_this_mo = api_client.get(
+        f"/api/setups?start_date={month_start_str}&end_date={today_str}&tz_offset=0"
+    ).json()
+    assert setups_this_mo["total"] == 1
+    assert setups_this_mo["items"][0]["symbol"] == "THIS_MO_USDT"
+    setups_all = api_client.get("/api/setups").json()
+    assert setups_all["total"] == 2
+
+
+def test_scan_runs_filters_by_run_id_status_and_date_range(api_client, db_session):
+    from app.models import ScanRun
+
+    db, _, _ = db_session
+    now = utcnow()
+    r1 = ScanRun(
+        strategy="ALL",
+        status="COMPLETED",
+        started_at=now - timedelta(hours=2),
+        finished_at=now - timedelta(hours=2),
+    )
+    r2 = ScanRun(
+        strategy="ALL",
+        status="FAILED",
+        error_message="Timeout",
+        started_at=now - timedelta(days=40),
+        finished_at=now - timedelta(days=40),
+    )
+    db.add_all([r1, r2])
+    db.commit()
+    db.refresh(r1)
+    db.refresh(r2)
+
+    # Filter by status=FAILED
+    failed = api_client.get("/api/scanner/runs?status=FAILED").json()
+    assert failed["total"] == 1
+    assert failed["items"][0]["id"] == r2.id
+
+    # Filter by run_id (with '#' prefix)
+    by_id = api_client.get(f"/api/scanner/runs?run_id=%23{r1.id}").json()
+    assert by_id["total"] == 1
+    assert by_id["items"][0]["id"] == r1.id
+
+    # Filter by date range (current month excludes 40-day-old run)
+    today_str = now.strftime("%Y-%m-%d")
+    month_start_str = now.replace(day=1).strftime("%Y-%m-%d")
+    this_mo = api_client.get(
+        f"/api/scanner/runs?start_date={month_start_str}&end_date={today_str}&tz_offset=0"
+    ).json()
+    assert this_mo["total"] == 1
+    assert this_mo["items"][0]["id"] == r1.id
+
+
+
+
+
 

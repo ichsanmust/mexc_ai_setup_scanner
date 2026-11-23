@@ -162,6 +162,7 @@ class TradeSetup(Base):
     __table_args__ = (
         Index("idx_trade_setups_symbol_status", "symbol", "status"),
         Index("idx_trade_setups_created_at", "created_at"),
+        Index("idx_trade_setups_updated_at", "updated_at"),
         Index("idx_trade_setups_strategy_status", "strategy_used", "status"),
         Index("idx_trade_setups_dup_lookup", "symbol", "decision", "strategy_used", "status"),
     )

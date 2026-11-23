@@ -376,3 +376,83 @@ async def test_check_open_setups_records_history_and_distinguishes_before_vs_aft
     assert s_tp_before.missed_tp_at is not None
     assert float(s_tp_before.missed_tp_price) == 110.0
     assert [e["event"] for e in (s_tp_before.status_history or [])] == ["CREATED", "TP_BEFORE_ENTRY"]
+
+
+@pytest.mark.asyncio
+async def test_extended_status_preserved_when_entry_touched_and_ignores_stale_candles(db_session):
+    from datetime import timedelta
+    from app.models import utcnow
+
+    db, _, _ = db_session
+    now = utcnow()
+    ext_at = now - timedelta(minutes=2)
+
+    # 1. Setup extended AFTER entry_hit_at was already set -> stays EXTENDED until TP/SL/Expire
+    s_ext_entered = _make_custom_setup(
+        symbol="SOL_USDT",
+        decision="LONG",
+        status="EXTENDED",
+        entry=100.0,
+        sl=95.0,
+        tp=110.0,
+        created_at=now - timedelta(hours=5),
+        expires_at=now + timedelta(hours=10),
+    )
+    s_ext_entered.entry_hit_at = now - timedelta(hours=4)
+    s_ext_entered.status_history = [
+        {"at": (now - timedelta(hours=5)).isoformat(), "event": "CREATED", "status": "OPEN", "price": 100.0},
+        {"at": (now - timedelta(hours=4)).isoformat(), "event": "ENTRY_HIT", "status": "ENTRY_HIT", "price": 100.0},
+        {"at": ext_at.isoformat(), "event": "EXTENDED", "status": "EXTENDED", "price": 100.0},
+    ]
+
+    # 2. Setup extended BEFORE entry -> touches Entry after ext_at -> records entry_hit_at & stays EXTENDED
+    s_ext_fresh = _make_custom_setup(
+        symbol="ARB_USDT",
+        decision="LONG",
+        status="EXTENDED",
+        entry=1.00,
+        sl=0.95,
+        tp=1.10,
+        created_at=now - timedelta(hours=5),
+        expires_at=now + timedelta(hours=10),
+    )
+    s_ext_fresh.status_history = [
+        {"at": (now - timedelta(hours=5)).isoformat(), "event": "CREATED", "status": "OPEN", "price": 1.00},
+        {"at": ext_at.isoformat(), "event": "EXTENDED", "status": "EXTENDED", "price": 1.00},
+    ]
+    db.add_all([s_ext_entered, s_ext_fresh])
+    db.commit()
+
+    stale_ts = int((now - timedelta(hours=3)).replace(tzinfo=timezone.utc).timestamp())
+    fresh_ts = int((now - timedelta(minutes=1)).replace(tzinfo=timezone.utc).timestamp())
+
+    class FakeMexcExtended:
+        async def get_all_tickers(self):
+            return {
+                "SOL_USDT": {"lastPrice": "102.0"},
+                "ARB_USDT": {"lastPrice": "1.02"},
+            }
+
+        async def get_kline(self, symbol, interval="Min1", limit=60):
+            if symbol == "SOL_USDT":
+                # Stale candle before EXTENDED hit SL 94.0, recent candle is safe at 101..103
+                return [
+                    {"time": stale_ts, "open": 96.0, "high": 97.0, "low": 94.0, "close": 95.0},
+                    {"time": fresh_ts, "open": 101.0, "high": 103.0, "low": 100.5, "close": 102.0},
+                ]
+            if symbol == "ARB_USDT":
+                return [
+                    {"time": fresh_ts, "open": 1.02, "high": 1.03, "low": 0.995, "close": 1.02},
+                ]
+            return []
+
+    stats = await check_open_setups(db, FakeMexcExtended())
+    db.refresh(s_ext_entered)
+    db.refresh(s_ext_fresh)
+
+    assert stats["entry_hit"] == 0
+    assert s_ext_entered.status == "EXTENDED"
+    assert s_ext_fresh.status == "EXTENDED"
+    assert s_ext_fresh.entry_hit_at is not None
+    assert s_ext_fresh.status_history[-1]["event"] == "ENTRY_HIT"
+
