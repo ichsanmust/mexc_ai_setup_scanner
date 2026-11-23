@@ -179,7 +179,8 @@ INSERT IGNORE INTO `app_settings` (`key`, `value`, `description`) VALUES
 ('max_24h_quote_volume', '0', 'Filter maksimal volume quote 24 jam (USDT, 0 = tanpa batas)'),
 ('min_atr_pct', '0.25', 'Pre-filter minimal ATR% LTF'),
 ('max_atr_pct', '8.0', 'Pre-filter maksimal ATR% LTF'),
-('min_confidence', '75', 'Minimal confidence AI untuk lolos Risk Guard');
+('min_confidence', '75', 'Minimal confidence AI untuk lolos Risk Guard'),
+('risk_profile', 'CONSERVATIVE', 'Profil risiko AI & R:R: CONSERVATIVE, MODERATE, atau AGGRESSIVE');
 
 -- Seed awal strategi bawaan & kustom (sinkron dengan database saat ini)
 -- Catatan Snapshot AI: Setiap strategi selalu memakai `suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, & `suggested_expiry_hours` masing-masing,

@@ -316,6 +316,12 @@ def seed_all(db: Session) -> None:
         str(settings.min_confidence),
         "Minimal confidence AI (0-100) untuk lolos Risk Guard",
     )
+    _upsert_default_setting(
+        db,
+        "risk_profile",
+        settings.risk_profile,
+        "Profil risiko AI & R:R: CONSERVATIVE, MODERATE, atau AGGRESSIVE",
+    )
 
     # Seed AI models if missing
     for item in DEFAULT_AI_MODELS:
