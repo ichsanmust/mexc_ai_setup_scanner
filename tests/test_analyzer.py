@@ -238,3 +238,187 @@ async def test_llm_connection_handles_null_content_from_reasoning_model(monkeypa
     )
     assert res["success"] is True
     assert "Koneksi berhasil" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_market_snapshot_retries_on_empty_content_from_thinking_model():
+    seen_requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        seen_requests.append(body)
+        if len(seen_requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "reasoning": "Analyzing HTF trend and pullback levels...",
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "symbol": "PIEVERSE_USDT",
+                                    "strategy_used": "TREND_PULLBACK",
+                                    "htf_analysis": "Uptrend intact",
+                                    "ltf_trigger_analysis": "Weak volume",
+                                    "checklist": {
+                                        "htf_trend_ok": True,
+                                        "pullback_or_level_ok": False,
+                                        "trigger_candle_ok": False,
+                                        "volume_ok": False,
+                                        "momentum_ok": True,
+                                        "rr_ok": False,
+                                    },
+                                    "market_regime": "TRENDING_UP",
+                                    "decision": "NO_TRADE",
+                                    "entry_type": "NONE",
+                                    "entry_price": None,
+                                    "stop_loss": None,
+                                    "take_profit": None,
+                                    "risk_reward_ratio": None,
+                                    "confidence": 55,
+                                    "invalidation_reason": "No trigger",
+                                    "rationale": "Wait for pullback",
+                                }
+                            )
+                        },
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        decision, _ = await analyze_market_snapshot(
+            snapshot={"symbol": "PIEVERSE_USDT", "ltf_15m": {"close": 0.25}},
+            strategy="TREND_PULLBACK",
+            llm_config={
+                "provider": "custom",
+                "base_url": "https://api.nano-gpt.com/api/v1/chat/completions",
+                "api_key": "test-key",
+                "model_id": "deepseek/deepseek-v4.1-flash-1017:thinking",
+            },
+            client=client,
+            max_tokens=1500,
+        )
+
+    assert len(seen_requests) == 2
+    assert seen_requests[0]["max_tokens"] == 1500
+    assert "response_format" in seen_requests[0]
+    assert seen_requests[1]["max_tokens"] == 4096
+    assert "response_format" not in seen_requests[1]
+    assert decision.symbol == "PIEVERSE_USDT"
+    assert decision.decision == "NO_TRADE"
+
+
+@pytest.mark.asyncio
+async def test_analyze_market_snapshot_extracts_json_from_reasoning_when_content_empty():
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.dumps(
+            {
+                "symbol": "BTC_USDT",
+                "strategy_used": "TREND_PULLBACK",
+                "htf_analysis": "Bullish",
+                "ltf_trigger_analysis": "Reclaim EMA21",
+                "checklist": {
+                    "htf_trend_ok": True,
+                    "pullback_or_level_ok": True,
+                    "trigger_candle_ok": True,
+                    "volume_ok": True,
+                    "momentum_ok": True,
+                    "rr_ok": True,
+                },
+                "market_regime": "TRENDING_UP",
+                "decision": "LONG",
+                "entry_type": "LIMIT",
+                "entry_price": 90000.0,
+                "stop_loss": 89000.0,
+                "take_profit": 92000.0,
+                "risk_reward_ratio": 2.0,
+                "confidence": 81,
+                "invalidation_reason": "Below 89k",
+                "rationale": "Valid setup",
+            }
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "",
+                            "reasoning": f"Thinking complete.\n```json\n{payload}\n```",
+                        },
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        decision, _ = await analyze_market_snapshot(
+            snapshot={"symbol": "BTC_USDT", "ltf_15m": {"close": 90100.0}},
+            strategy="TREND_PULLBACK",
+            llm_config={
+                "provider": "custom",
+                "base_url": "https://api.nano-gpt.com/api/v1/chat/completions",
+                "api_key": "test-key",
+                "model_id": "deepseek/deepseek-v4.1-flash-1017:thinking",
+            },
+            client=client,
+        )
+
+    assert calls == 1
+    assert decision.decision == "LONG"
+    assert decision.confidence == 81
+
+
+@pytest.mark.asyncio
+async def test_analyze_market_snapshot_raises_clear_error_when_empty_content_persists():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": None, "reasoning": "Still thinking..."},
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="finish_reason=length"):
+            await analyze_market_snapshot(
+                snapshot={"symbol": "PIEVERSE_USDT", "ltf_15m": {"close": 0.25}},
+                strategy="TREND_PULLBACK",
+                llm_config={
+                    "provider": "custom",
+                    "base_url": "https://api.nano-gpt.com/api/v1/chat/completions",
+                    "api_key": "test-key",
+                    "model_id": "deepseek/deepseek-v4.1-flash-1017:thinking",
+                },
+                client=client,
+            )

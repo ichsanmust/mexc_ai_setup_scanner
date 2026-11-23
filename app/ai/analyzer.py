@@ -216,6 +216,16 @@ def _build_headers(provider: str, api_key: str) -> dict[str, str]:
     return headers
 
 
+def _extract_choice_fields(raw_response: dict[str, Any]) -> tuple[str, str, str]:
+    """Extract (content, reasoning, finish_reason) from first chat completion choice."""
+    choice = (raw_response.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    content = str(msg.get("content") or "").strip()
+    reasoning = str(msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
+    finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+    return content, reasoning, finish_reason
+
+
 async def analyze_market_snapshot(
     snapshot: dict[str, Any],
     strategy: str,
@@ -284,29 +294,40 @@ async def analyze_market_snapshot(
         own_client = True
 
     try:
-        async def _call_llm(messages_payload: list[dict[str, str]]) -> dict[str, Any]:
-            req_base = {**base_payload, "messages": messages_payload}
-            payload_schema = {**req_base, "response_format": _build_response_format_schema()}
-            resp = await client.post(base_url, headers=headers, json=payload_schema)
+        async def _call_llm(
+            messages_payload: list[dict[str, str]],
+            max_tokens_override: Optional[int] = None,
+            force_plain: bool = False,
+        ) -> dict[str, Any]:
+            req_base = {
+                **base_payload,
+                "messages": messages_payload,
+                "max_tokens": max_tokens_override if max_tokens_override is not None else eff_max_tokens,
+            }
+            if force_plain:
+                resp = await client.post(base_url, headers=headers, json=req_base)
+            else:
+                payload_schema = {**req_base, "response_format": _build_response_format_schema()}
+                resp = await client.post(base_url, headers=headers, json=payload_schema)
 
-            # Graceful fallback if provider rejects strict json_schema format
-            if resp.status_code in (400, 422):
-                log.warning(
-                    "Provider %s (%s) returned %s for strict json_schema; falling back to json_object",
-                    provider,
-                    model_id,
-                    resp.status_code,
-                )
-                payload_obj = {**req_base, "response_format": {"type": "json_object"}}
-                resp = await client.post(base_url, headers=headers, json=payload_obj)
+                # Graceful fallback if provider rejects strict json_schema format
                 if resp.status_code in (400, 422):
                     log.warning(
-                        "Provider %s (%s) returned %s for json_object; falling back to plain chat completions",
+                        "Provider %s (%s) returned %s for strict json_schema; falling back to json_object",
                         provider,
                         model_id,
                         resp.status_code,
                     )
-                    resp = await client.post(base_url, headers=headers, json=req_base)
+                    payload_obj = {**req_base, "response_format": {"type": "json_object"}}
+                    resp = await client.post(base_url, headers=headers, json=payload_obj)
+                    if resp.status_code in (400, 422):
+                        log.warning(
+                            "Provider %s (%s) returned %s for json_object; falling back to plain chat completions",
+                            provider,
+                            model_id,
+                            resp.status_code,
+                        )
+                        resp = await client.post(base_url, headers=headers, json=req_base)
 
             if resp.is_error:
                 raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
@@ -317,43 +338,85 @@ async def analyze_market_snapshot(
 
         messages = list(base_payload["messages"])
         raw_response = await _call_llm(messages)
-        msg = (raw_response.get("choices") or [{}])[0].get("message") or {}
-        content = msg.get("content") or ""
-        if not str(content).strip():
-            raise RuntimeError(
-                f"Model '{model_id}' mengembalikan content kosong/null. Coba pilih model lain yang mendukung output JSON."
-            )
+        content, reasoning, finish_reason = _extract_choice_fields(raw_response)
 
-        json_text = _extract_json_content(str(content))
-        try:
-            decision = AISetupDecision.model_validate_json(json_text)
-        except (ValidationError, ValueError) as parse_err:
+        # Some thinking/reasoning models place the final JSON inside reasoning when content is empty
+        decision: Optional[AISetupDecision] = None
+        if not content and reasoning:
+            try:
+                decision = AISetupDecision.model_validate_json(_extract_json_content(reasoning))
+            except (ValidationError, ValueError):
+                decision = None
+
+        # Retry once with higher max_tokens & plain mode if content is empty (e.g. thinking exhausted max_tokens)
+        if decision is None and not content:
+            retry_max_tokens = min(8192, max(eff_max_tokens * 2, 4096))
             log.warning(
-                "JSON/Schema validation failed for %s (%s); retrying once: %s",
+                "Model '%s' (%s) returned empty content (finish_reason=%s); retrying once with max_tokens=%s in plain mode",
                 model_id,
                 snapshot.get("symbol"),
-                parse_err,
+                finish_reason or "unknown",
+                retry_max_tokens,
             )
-            retry_messages = [
-                *messages,
-                {"role": "assistant", "content": str(content)},
+            empty_retry_messages = [
+                messages[0],
                 {
                     "role": "user",
                     "content": (
-                        f"Output JSON sebelumnya gagal validasi schema: {str(parse_err)[:400]}. "
-                        f"Perbaiki dan kembalikan HANYA JSON valid sesuai schema tanpa teks lain."
+                        f"{messages[1]['content']}\n\n"
+                        "PENTING: Berpikir singkat saja dan langsung tulis JSON valid sesuai schema pada content utama (jangan sampai terpotong)."
                     ),
                 },
             ]
-            raw_response = await _call_llm(retry_messages)
-            msg = (raw_response.get("choices") or [{}])[0].get("message") or {}
-            content = msg.get("content") or ""
-            if not str(content).strip():
-                raise RuntimeError(
-                    f"Model '{model_id}' mengembalikan content kosong pada retry validasi JSON."
-                ) from parse_err
-            json_text = _extract_json_content(str(content))
-            decision = AISetupDecision.model_validate_json(json_text)
+            raw_response = await _call_llm(
+                empty_retry_messages,
+                max_tokens_override=retry_max_tokens,
+                force_plain=True,
+            )
+            content, reasoning, finish_reason = _extract_choice_fields(raw_response)
+            if not content and reasoning:
+                try:
+                    decision = AISetupDecision.model_validate_json(_extract_json_content(reasoning))
+                except (ValidationError, ValueError):
+                    decision = None
+
+        if decision is None and not content:
+            reason_hint = f" (finish_reason={finish_reason})" if finish_reason else ""
+            raise RuntimeError(
+                f"Model '{model_id}' mengembalikan content kosong/null{reason_hint}. "
+                f"Jika memakai model :thinking, naikkan LLM Max Tokens (mis. 4000) atau pilih model non-thinking."
+            )
+
+        if decision is None:
+            json_text = _extract_json_content(content)
+            try:
+                decision = AISetupDecision.model_validate_json(json_text)
+            except (ValidationError, ValueError) as parse_err:
+                log.warning(
+                    "JSON/Schema validation failed for %s (%s); retrying once: %s",
+                    model_id,
+                    snapshot.get("symbol"),
+                    parse_err,
+                )
+                retry_messages = [
+                    *messages,
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Output JSON sebelumnya gagal validasi schema: {str(parse_err)[:400]}. "
+                            f"Perbaiki dan kembalikan HANYA JSON valid sesuai schema tanpa teks lain."
+                        ),
+                    },
+                ]
+                raw_response = await _call_llm(retry_messages)
+                content, _, _ = _extract_choice_fields(raw_response)
+                if not content:
+                    raise RuntimeError(
+                        f"Model '{model_id}' mengembalikan content kosong pada retry validasi JSON."
+                    ) from parse_err
+                json_text = _extract_json_content(content)
+                decision = AISetupDecision.model_validate_json(json_text)
 
         # Ensure symbol and strategy_used are normalized cleanly
         decision.symbol = snapshot["symbol"]
