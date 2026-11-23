@@ -268,6 +268,30 @@ function statusBadge(setupOrStatus, manualActionAt = null) {
   return `<div style="display:flex; flex-wrap:wrap; gap:4px;">${tags.join("")}</div>`;
 }
 
+function syncScanButtonsState(isRunning) {
+  const running = Boolean(isRunning);
+  const scanBtn = document.getElementById("btn-run-scan");
+  if (scanBtn) {
+    scanBtn.disabled = running;
+    scanBtn.textContent = running ? "Scanning..." : "Run Scan Now";
+    scanBtn.title = running
+      ? "Scan sedang berjalan (hanya 1 proses scan aktif dalam satu waktu)"
+      : "";
+  }
+  const modalScanBtn = document.getElementById("btn-modal-run-scan");
+  if (modalScanBtn) {
+    modalScanBtn.disabled = running;
+    modalScanBtn.textContent = running ? "Scan Sedang Berjalan..." : "Scan Sekarang (Manual)";
+    modalScanBtn.title = running
+      ? "Scan sedang berjalan — tunggu hingga selesai sebelum menjalankan scan baru"
+      : "";
+  }
+  const modalInfo = document.getElementById("modal-scan-running-info");
+  if (modalInfo) {
+    modalInfo.classList.toggle("hidden", !running);
+  }
+}
+
 async function loadHealthAndStatus() {
   const [health, scannerStatus] = await Promise.all([
     apiRequest("/api/health"),
@@ -326,6 +350,7 @@ async function loadHealthAndStatus() {
     hideErrorBanner();
   }
   updateTopbarOverflow();
+  syncScanButtonsState(scannerStatus.is_running);
   return scannerStatus;
 }
 
@@ -3108,7 +3133,7 @@ async function saveAISettings() {
   };
   try {
     await apiRequest("/api/ai/settings", { method: "POST", body: JSON.stringify(payload) });
-    showToast("Pengaturan provider AI berhasil disimpan ke MySQL.");
+    showToast("Pengaturan provider AI berhasil disimpan.");
     await Promise.all([loadAIModalData(), loadHealthAndStatus()]);
   } catch (err) {
     showToast(err.message, true);
@@ -3604,18 +3629,15 @@ function wireEvents() {
   document.getElementById("btn-dismiss-error").addEventListener("click", hideErrorBanner);
 
   document.getElementById("btn-run-scan").addEventListener("click", async () => {
-    const scanBtn = document.getElementById("btn-run-scan");
     try {
       hideErrorBanner();
-      scanBtn.disabled = true;
-      scanBtn.textContent = "Scanning...";
+      syncScanButtonsState(true);
       const res = await apiRequest("/api/scanner/run", { method: "POST" });
       showToast(res.message);
 
       if (!res.started) {
-        scanBtn.disabled = false;
-        scanBtn.textContent = "Run Scan Now";
-        await loadHealthAndStatus();
+        const stNow = await loadHealthAndStatus();
+        syncScanButtonsState(stNow?.is_running);
         return;
       }
 
@@ -3629,8 +3651,7 @@ function wireEvents() {
           const hasFinishedNewRun = latest && latest.id > prevRunId && latest.status !== "RUNNING";
           if ((!st.is_running && (hasFinishedNewRun || checks >= 5)) || checks >= 300) {
             clearInterval(timer);
-            scanBtn.disabled = false;
-            scanBtn.textContent = "Run Scan Now";
+            syncScanButtonsState(false);
             await Promise.all([loadSetups(), loadAnalytics()]);
             if (latest && latest.status === "FAILED") {
               showToast(`Scan #${latest.id} gagal: ${latest.error_message || "Cek banner error"}`, true);
@@ -3640,14 +3661,12 @@ function wireEvents() {
           }
         } catch (pollErr) {
           clearInterval(timer);
-          scanBtn.disabled = false;
-          scanBtn.textContent = "Run Scan Now";
+          syncScanButtonsState(false);
           showErrorBanner("Gagal Memantau Status Scan", pollErr.message);
         }
       }, 2000);
     } catch (err) {
-      scanBtn.disabled = false;
-      scanBtn.textContent = "Run Scan Now";
+      syncScanButtonsState(false);
       showErrorBanner("Gagal Menjalankan Scan", err.message);
       showToast(err.message, true);
     }

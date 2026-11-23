@@ -633,7 +633,7 @@
               </div>
               <label class="field-block-label">
                 Active Strategies
-                <button type="button" class="info-btn" data-info-title="Active Strategies" data-info="Daftar strategi diambil langsung dari tabel 'strategies' di MySQL. Centang atau gunakan tabel Kelola Strategi di bawah untuk menambah strategi baru, mengubah timeframe/prompt, serta mengaktifkan/menonaktifkan strategi.">i</button>
+                <button type="button" class="info-btn" data-info-title="Active Strategies" data-info="Daftar strategi diambil dari konfigurasi strategi yang tersimpan. Centang atau gunakan tabel Kelola Strategi di bawah untuk menambah strategi baru, mengubah timeframe/prompt, serta mengaktifkan/menonaktifkan strategi.">i</button>
               </label>
               <div id="cfg-strategy-list" class="strategy-checks"></div>
             </div>
@@ -739,6 +739,7 @@
           <div class="scanner-settings-actions" style="margin-top: 14px;">
             <button id="btn-save-scanner-settings" class="btn btn-primary">Simpan Semua Pengaturan Scanner</button>
             <button id="btn-modal-run-scan" class="btn btn-green">Scan Sekarang (Manual)</button>
+            <span id="modal-scan-running-info" class="badge badge-open hidden">Scan sedang berjalan — tunggu hingga selesai</span>
           </div>
 
           <hr class="divider" />
