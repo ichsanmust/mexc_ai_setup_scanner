@@ -1674,6 +1674,14 @@ function getAutoPositionSide() {
   return "LONG";
 }
 
+function parseUtcEpochSec(isoStr) {
+  if (!isoStr) return NaN;
+  const raw = String(isoStr).trim();
+  const hasTz = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw);
+  const ms = new Date(hasTz ? raw : `${raw}Z`).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+}
+
 function buildSetupPositionBox(setup) {
   if (!setup) return null;
   const side = String(setup.decision).toUpperCase() === "SHORT" ? "SHORT" : "LONG";
@@ -1686,17 +1694,34 @@ function buildSetupPositionBox(setup) {
   const tp = Number(setup.take_profit);
   if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(tp)) return null;
 
+  const activeStatuses = new Set(["OPEN", "ENTRY_HIT", "EXTENDED", "MANUAL_TAKEN"]);
+  const isFinished = !activeStatuses.has(String(setup.status || "").toUpperCase());
+
   let startIdx = Math.max(0, state.chartBarsCount - 28);
   if (setup.created_at && state.chartCandles.length) {
-    const createdSec = Math.floor(new Date(setup.created_at + "Z").getTime() / 1000);
+    const createdSec = parseUtcEpochSec(setup.created_at);
     if (Number.isFinite(createdSec)) {
       const idx = state.chartCandles.findIndex((c) => Number(c.time) >= createdSec);
       if (idx >= 0) {
-        startIdx = Math.min(idx, Math.max(0, state.chartCandles.length - 6));
+        startIdx = isFinished
+          ? Math.min(idx, Math.max(0, state.chartCandles.length - 2))
+          : Math.min(idx, Math.max(0, state.chartCandles.length - 6));
       }
     }
   }
-  const endIdx = Math.max(startIdx + 18, state.chartBarsCount + 6);
+
+  let endIdx = Math.max(startIdx + 18, state.chartBarsCount + 6);
+  if (isFinished && state.chartCandles.length) {
+    const hist = Array.isArray(setup.status_history) ? setup.status_history : [];
+    const lastHistAt = hist.length ? hist[hist.length - 1]?.at : null;
+    const finalIso = setup.resolved_at || lastHistAt || setup.manual_action_at || setup.updated_at || setup.expires_at;
+    const endedSec = parseUtcEpochSec(finalIso);
+    if (Number.isFinite(endedSec)) {
+      const eIdx = state.chartCandles.findIndex((c) => Number(c.time) >= endedSec);
+      const resolvedBarIdx = eIdx >= 0 ? eIdx : state.chartCandles.length - 1;
+      endIdx = Math.max(startIdx + 1, resolvedBarIdx);
+    }
+  }
   return {
     id: SETUP_BOX_ID,
     isSetupBox: true,
