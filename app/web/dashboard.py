@@ -552,6 +552,8 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
         _upsert_setting(db, "max_atr_pct", str(body.max_atr_pct))
     if body.min_confidence is not None:
         _upsert_setting(db, "min_confidence", str(body.min_confidence))
+    if body.risk_profile is not None:
+        _upsert_setting(db, "risk_profile", body.risk_profile.strip().upper())
 
     db.commit()
     return ScannerSettingsOut(**resolve_runtime_settings(db))

@@ -486,7 +486,7 @@ function buildScanSettingsHtml(cfg, fallbackStrategy) {
     <div class="eval-settings-box">
       <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
       <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></div>
-      <div><strong>Filter &amp; Risk:</strong> Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
+      <div><strong>Filter &amp; Risk:</strong> Profil <b>${escapeHtml(cfg.risk_profile || "CONSERVATIVE")}</b> &bull; Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
     </div>`;
 }
 
@@ -2901,6 +2901,20 @@ async function loadAIModalData(syncFilterToActiveProvider = false) {
   setGroupedNumberValue("cfg-min-vol", "cfg-min-vol-hint", scannerCfg.min_24h_quote_volume, false);
   setGroupedNumberValue("cfg-max-vol", "cfg-max-vol-hint", scannerCfg.max_24h_quote_volume, true);
   document.getElementById("cfg-min-confidence").value = scannerCfg.min_confidence;
+  const riskSel = document.getElementById("cfg-risk-profile");
+  if (riskSel) {
+    riskSel.value = scannerCfg.risk_profile || "CONSERVATIVE";
+    if (!riskSel.dataset.boundRiskSync) {
+      riskSel.dataset.boundRiskSync = "1";
+      riskSel.addEventListener("change", () => {
+        const defaults = { CONSERVATIVE: 70, MODERATE: 60, AGGRESSIVE: 55 };
+        const confInput = document.getElementById("cfg-min-confidence");
+        if (confInput && defaults[riskSel.value] !== undefined) {
+          confInput.value = defaults[riskSel.value];
+        }
+      });
+    }
+  }
   document.getElementById("cfg-min-atr").value = scannerCfg.min_atr_pct;
   document.getElementById("cfg-max-atr").value = scannerCfg.max_atr_pct;
 
@@ -3129,6 +3143,7 @@ async function saveScannerSettings() {
     min_24h_quote_volume: minVol,
     max_24h_quote_volume: maxVol,
     min_confidence: parseNumField("cfg-min-confidence"),
+    risk_profile: document.getElementById("cfg-risk-profile")?.value || "CONSERVATIVE",
     min_atr_pct: parseNumField("cfg-min-atr"),
     max_atr_pct: parseNumField("cfg-max-atr"),
   };

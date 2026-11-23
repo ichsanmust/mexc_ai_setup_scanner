@@ -24,6 +24,7 @@ RUNTIME_SETTING_KEYS = [
     "min_atr_pct",
     "max_atr_pct",
     "min_confidence",
+    "risk_profile",
 ]
 
 
@@ -55,6 +56,14 @@ def _parse_strategies(raw: Optional[str], default_list: list[str]) -> list[str]:
     items = [s.strip().upper() for s in str(raw).split(",") if s.strip()]
     valid = [s for s in items if s in STRATEGY_MIN_RR]
     return valid or default_list
+
+
+def _parse_risk_profile(raw: Optional[str], default: str = "CONSERVATIVE") -> str:
+    val = str(raw or "").strip().upper()
+    if val in {"CONSERVATIVE", "MODERATE", "AGGRESSIVE"}:
+        return val
+    d = str(default or "CONSERVATIVE").strip().upper()
+    return d if d in {"CONSERVATIVE", "MODERATE", "AGGRESSIVE"} else "CONSERVATIVE"
 
 
 def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
@@ -104,4 +113,5 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
         "min_atr_pct": _parse_float(rows.get("min_atr_pct"), settings.min_atr_pct, 0.0, 50.0),
         "max_atr_pct": _parse_float(rows.get("max_atr_pct"), settings.max_atr_pct, 0.1, 100.0),
         "min_confidence": _parse_int(rows.get("min_confidence"), settings.min_confidence, 0, 100),
+        "risk_profile": _parse_risk_profile(rows.get("risk_profile"), settings.risk_profile),
     }

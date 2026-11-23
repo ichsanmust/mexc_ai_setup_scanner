@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     min_atr_pct: float = 0.25
     max_atr_pct: float = 8.0
     min_confidence: int = 75
+    risk_profile: str = "CONSERVATIVE"
 
     # Web Server
     app_host: str = "0.0.0.0"

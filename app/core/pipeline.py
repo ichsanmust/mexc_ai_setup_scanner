@@ -123,6 +123,7 @@ class ScanPipeline:
                 "min_atr_pct": rt_cfg["min_atr_pct"],
                 "max_atr_pct": rt_cfg["max_atr_pct"],
                 "min_confidence": rt_cfg["min_confidence"],
+                "risk_profile": rt_cfg["risk_profile"],
                 "mexc_base_url": rt_cfg["mexc_base_url"],
                 "llm_provider": llm_cfg["provider"],
                 "llm_model": llm_cfg["model_id"],
@@ -338,6 +339,7 @@ class ScanPipeline:
         accepts_system_prompt = "system_prompt" in ai_params
         accepts_max_tokens = "max_tokens" in ai_params
         accepts_min_conf = "min_confidence" in ai_params
+        accepts_risk_profile = "risk_profile" in ai_params
 
         llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
 
@@ -354,6 +356,8 @@ class ScanPipeline:
                         kwargs["max_tokens"] = rt_cfg["llm_max_tokens"]
                     if accepts_min_conf:
                         kwargs["min_confidence"] = rt_cfg["min_confidence"]
+                    if accepts_risk_profile:
+                        kwargs["risk_profile"] = rt_cfg["risk_profile"]
                     if accepts_system_prompt:
                         kwargs["system_prompt"] = prompt_map.get(strat.strip().upper())
                     decision, raw_resp = await analyze_market_snapshot(**kwargs)
@@ -390,6 +394,7 @@ class ScanPipeline:
                 db=db,
                 min_confidence=rt_cfg["min_confidence"],
                 snapshot=snap,
+                risk_profile=rt_cfg["risk_profile"],
             )
 
             if not is_valid:

@@ -726,12 +726,25 @@
                   <input id="cfg-max-atr" type="number" min="0.1" max="100" step="0.1" value="8.0" />
                 </div>
               </div>
-              <div class="settings-field">
-                <label for="cfg-min-confidence">
-                  Min AI Confidence (%)
-                  <button type="button" class="info-btn" data-info-title="Min AI Confidence (%)" data-info="Skor keyakinan minimal (0–100) dari AI agar setup diterima Risk Guard. Default 75: jika di bawah 75, otomatis ditolak menjadi NO_TRADE.">i</button>
-                </label>
-                <input id="cfg-min-confidence" type="number" min="0" max="100" value="75" />
+              <div class="settings-grid-2">
+                <div>
+                  <label for="cfg-risk-profile">
+                    Risk Profile (Gaya AI &amp; R:R)
+                    <button type="button" class="info-btn" data-info-title="Risk Profile (Gaya AI &amp; R:R)" data-info="Mengatur gaya evaluasi AI dan kelonggaran R:R. Conservative: ketat (R:R standar). Moderate: izinkan B/C-Grade (R:R -0.2). Aggressive: taktis/early entry (R:R -0.3). Mengganti profil otomatis mengisi saran Min AI Confidence, namun tetap bisa diubah manual.">i</button>
+                  </label>
+                  <select id="cfg-risk-profile">
+                    <option value="CONSERVATIVE">Conservative (Ketat • R:R standar)</option>
+                    <option value="MODERATE">Moderate (Seimbang • R:R -0.2)</option>
+                    <option value="AGGRESSIVE">Aggressive (Taktis • R:R -0.3)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="cfg-min-confidence">
+                    Min AI Confidence (%)
+                    <button type="button" class="info-btn" data-info-title="Min AI Confidence (%)" data-info="Batas skor keyakinan minimal (0–100) yang berlaku langsung di prompt AI dan Risk Guard. Setup di bawah nilai ini menjadi NO_TRADE.">i</button>
+                  </label>
+                  <input id="cfg-min-confidence" type="number" min="0" max="100" value="75" />
+                </div>
               </div>
             </div>
           </div>

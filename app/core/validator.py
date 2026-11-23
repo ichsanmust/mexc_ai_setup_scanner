@@ -30,12 +30,22 @@ def validate_and_guard_setup(
     db: Optional[Session] = None,
     min_confidence: Optional[int] = None,
     snapshot: Optional[dict] = None,
+    risk_profile: Optional[str] = None,
 ) -> tuple[bool, AISetupDecision, str]:
     """Validate confidence, price geometry, ATR/direction bounds, R:R ratio, and OPEN conflicts."""
+    rt_cfg = resolve_runtime_settings(db) if db is not None else None
+    eff_risk_profile = (
+        (risk_profile or (rt_cfg["risk_profile"] if rt_cfg is not None else settings.risk_profile))
+        .strip()
+        .upper()
+    )
+    if eff_risk_profile not in {"CONSERVATIVE", "MODERATE", "AGGRESSIVE"}:
+        eff_risk_profile = "CONSERVATIVE"
+
     if min_confidence is not None:
         conf_threshold = min_confidence
-    elif db is not None:
-        conf_threshold = resolve_runtime_settings(db)["min_confidence"]
+    elif rt_cfg is not None:
+        conf_threshold = rt_cfg["min_confidence"]
     else:
         conf_threshold = settings.min_confidence
 
@@ -177,6 +187,10 @@ def validate_and_guard_setup(
         strat_row = db.query(Strategy).filter(Strategy.name == strat_key).first()
         if strat_row is not None and strat_row.min_rr is not None:
             min_rr = float(strat_row.min_rr)
+    if eff_risk_profile == "MODERATE":
+        min_rr = max(1.3, round(min_rr - 0.2, 2))
+    elif eff_risk_profile == "AGGRESSIVE":
+        min_rr = max(1.2, round(min_rr - 0.3, 2))
     if actual_rr < min_rr:
         return (
             False,

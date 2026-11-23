@@ -234,6 +234,7 @@ async def analyze_market_snapshot(
     timeout_seconds: Optional[int] = None,
     max_tokens: Optional[int] = None,
     min_confidence: Optional[int] = None,
+    risk_profile: Optional[str] = None,
     system_prompt: Optional[str] = None,
     db: Optional[Session] = None,
 ) -> tuple[AISetupDecision, dict[str, Any]]:
@@ -252,7 +253,30 @@ async def analyze_market_snapshot(
     schema_json_str = json.dumps(_build_strict_decision_json_schema(), ensure_ascii=False)
     htf_iv = (snapshot.get("htf_1h") or {}).get("interval", "HTF")
     ltf_iv = (snapshot.get("ltf_15m") or {}).get("interval", "LTF")
-    _ = min_confidence  # Kept in signature for caller compatibility; threshold is enforced deterministically in validator
+    eff_min_conf = max(0, min(100, int(min_confidence if min_confidence is not None else settings.min_confidence)))
+    eff_risk_profile = (risk_profile or "CONSERVATIVE").strip().upper()
+    if eff_risk_profile == "MODERATE":
+        confidence_instruction = (
+            f"Mode Risiko Aktif: MODERATE (mengesampingkan batas ketat < 70 dan syarat minor pada aturan strategi). "
+            f"Nilai confidence (0-100) berdasarkan kualitas konfluensi: 80-95 (A-Grade lengkap), "
+            f"{eff_min_conf}-79 (B/C-Grade: struktur utama & arah jelas dengan R:R layak walau 1-2 konfluensi tambahan moderat/belum ekstrem -> "
+            f"tetap keluarkan LONG/SHORT, utamakan LIMIT di level kunci jika belum terkonfirmasi penuh), "
+            f"<{eff_min_conf} (lemah/berkonflik berat -> NO_TRADE)."
+        )
+    elif eff_risk_profile == "AGGRESSIVE":
+        confidence_instruction = (
+            f"Mode Risiko Aktif: AGGRESSIVE (mengesampingkan batas ketat < 70 dan syarat volume/konfluensi sekunder pada aturan strategi). "
+            f"Nilai confidence (0-100) untuk setup taktis/early entry: 75-95 (A-Grade), "
+            f"{eff_min_conf}-74 (B/C-Grade: ada edge arah, sweep, atau pullback S/R yang layak dengan R:R masuk akal meski konfluensi parsial seperti volume moderat atau HTF MIXED -> "
+            f"tetap keluarkan LONG/SHORT dan jelaskan risikonya di rationale), "
+            f"<{eff_min_conf} (sangat lemah/berkonflik ekstrem -> NO_TRADE)."
+        )
+    else:
+        b_grade_range = f"{eff_min_conf}-79" if eff_min_conf < 80 else "80+"
+        confidence_instruction = (
+            f"Nilai confidence (0-100) murni berdasarkan kualitas konfluensi "
+            f"(80-95: A-Grade lengkap, {b_grade_range}: B-Grade struktur utama & R:R terpenuhi, <{eff_min_conf}: lemah/berkonflik -> NO_TRADE)."
+        )
     user_message = (
         f"Evaluasi snapshot market MEXC Futures berikut untuk strategi {strategy}.\n"
         f"Catatan Struktur Snapshot: key 'htf_1h' berisi ringkasan Higher Timeframe aktual ({htf_iv}) "
@@ -270,7 +294,7 @@ async def analyze_market_snapshot(
         f"- market_ticker.open_interest_usdt, oi_to_volume_ratio, funding_rate_pct, funding_extreme: normalisasi OI & status funding.\n"
         f"Instruksi Evaluasi Berurutan: Isi terlebih dahulu htf_analysis, ltf_trigger_analysis, dan checklist secara objektif "
         f"berdasarkan aturan strategi, baru kemudian tentukan market_regime, decision, level harga, dan confidence. "
-        f"Nilai confidence (0-100) murni berdasarkan kualitas konfluensi (80-95: A-Grade lengkap, 70-79: B-Grade struktur utama & R:R terpenuhi, <70: lemah/berkonflik -> NO_TRADE).\n"
+        f"{confidence_instruction}\n"
         f"Kembalikan HANYA JSON valid sesuai schema ini:\n{schema_json_str}\n\n"
         f"MARKET SNAPSHOT:\n{json.dumps(snapshot, ensure_ascii=False)}"
     )

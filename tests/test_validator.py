@@ -200,3 +200,34 @@ def test_validator_crosschecks_checklist_when_present():
     ok_vol, _, reason_vol = validate_and_guard_setup(bad_vol, snapshot=snap_low_vol)
     assert ok_vol is False
     assert "volume_ok is true" in reason_vol
+
+
+def test_validator_risk_profile_adjusts_confidence_and_rr():
+    # Setup with confidence=58 and R:R=1.6 (below TREND_PULLBACK standard min_rr=1.8)
+    dec = _make_decision(
+        strategy_used="TREND_PULLBACK",
+        confidence=58,
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=108.0,  # R:R = 8/5 = 1.6
+    )
+
+    # min_confidence is always respected without silent cap
+    ok_c, _, reason_c = validate_and_guard_setup(dec, min_confidence=70, risk_profile="MODERATE")
+    assert ok_c is False
+    assert "Confidence 58 < threshold 70" in reason_c
+
+    # When min_confidence=55, CONSERVATIVE still rejects R:R 1.6 < 1.8
+    ok_cons, _, reason_cons = validate_and_guard_setup(dec, min_confidence=55, risk_profile="CONSERVATIVE")
+    assert ok_cons is False
+    assert "R:R 1.60 < minimum 1.80" in reason_cons
+
+    # MODERATE lowers min_rr by 0.2 (1.8 -> 1.6) -> accepted!
+    ok_m, norm_m, _ = validate_and_guard_setup(dec, min_confidence=55, risk_profile="MODERATE")
+    assert ok_m is True
+    assert norm_m.risk_reward_ratio == 1.6
+
+    # AGGRESSIVE lowers min_rr by 0.3 (1.8 -> 1.5) -> accepted!
+    ok_a, norm_a, _ = validate_and_guard_setup(dec, min_confidence=55, risk_profile="AGGRESSIVE")
+    assert ok_a is True
+    assert norm_a.risk_reward_ratio == 1.6

@@ -394,6 +394,7 @@ class ScannerSettingsOut(BaseModel):
     min_atr_pct: float
     max_atr_pct: float
     min_confidence: int
+    risk_profile: Literal["CONSERVATIVE", "MODERATE", "AGGRESSIVE"] = "CONSERVATIVE"
 
 
 class ScannerSettingsUpdate(BaseModel):
@@ -415,6 +416,7 @@ class ScannerSettingsUpdate(BaseModel):
     min_atr_pct: Optional[float] = Field(default=None, ge=0.0, le=50.0)
     max_atr_pct: Optional[float] = Field(default=None, ge=0.1, le=100.0)
     min_confidence: Optional[int] = Field(default=None, ge=0, le=100)
+    risk_profile: Optional[Literal["CONSERVATIVE", "MODERATE", "AGGRESSIVE"]] = None
 
 
 class StrategyCreate(BaseModel):
