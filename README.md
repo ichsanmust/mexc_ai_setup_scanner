@@ -7,15 +7,17 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
 ## Fitur Utama
 
 - **Public Market Data Only:** Mengambil kontrak USDT-M aktif, ticker 24 jam (`lastPrice`, `fairPrice`, `indexPrice`, `fundingRate`, `holdVol`, dll.), dan candlestick multi-timeframe (`HTF` & `LTF`) dari `https://contract.mexc.com/api/v1/contract/...`. *(Catatan: MEXC public REST tidak menyediakan feed likuidasi; crowding/potensi squeeze dievaluasi dari `funding_rate` + `open_interest_hold_vol`.)*
-- **Deterministic Feature Builder:** Menghitung EMA 21, EMA 50, EMA 200, RSI 14, `prev_rsi14`, ATR 14, Volume MA20 & volume ratio, compression ratio, **DSS Bressert (`10 9 5`, meliputi `dss`, `prev_dss`, `dss_signal`)**, ringkasan 3 candle terakhir (`recent_candles`: `open`, `high`, `low`, `close`, `volume`, `is_bullish`, `direction`, `body_pct`, `upper_wick_pct`, `lower_wick_pct`), serta deteksi `recent_swing_high`, `recent_swing_low`, `nearest_support`, dan `nearest_resistance`.
-- **Per-Strategy Timeframe, Candles & Expiry:** Setiap strategi aktif (baik 1 maupun multi-strategi) otomatis memakai `suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, dan `suggested_expiry_hours` masing-masing dari tabel `strategies` (penarikan kline MEXC terdeduplikasi per `(symbol, interval)` agar hemat request). Setting global hanya mengatur **Mode Auto/Manual**, **Scan/Tracker Interval**, **Top N Pairs**, filter **Volume/ATR%/Confidence**, serta runtime **MEXC/LLM**.
+- **Deterministic Feature Builder:** Menghitung indikator murni dari **candle yang sudah close** (`forming_candle` dipisah sebagai konteks berjalan): EMA 21/50/200 (`ema21_slope_pct`, `ema50_slope_pct`), RSI 14, `prev_rsi14`, ATR 14, Volume MA20 & `volume_ratio`, `compression_ratio`, **DSS Bressert (`10 9 5`, meliputi `dss`, `prev_dss`, `dss_signal`, `prev_dss_signal`, `dss_cross_up`, `dss_cross_down`)**, 3 candle terakhir detail (`recent_candles`) + 15 candle ringkas (`compact_candles_15`), pivot & struktur (`recent_swing_high/low`, `prior_swing_high/low`, `swept_prior_high/low`, `structure_bias`, `nearest_support/resistance`, `support_is_fallback`/`resistance_is_fallback`), normalisasi OI (`open_interest_usdt`, `oi_to_volume_ratio`, `funding_rate_pct`, `funding_extreme`), **`level_candidates`** (kandidat SL/TP & R:R deterministik), serta konteks pasar global **`market_context.btc`**.
+- **Per-Strategy Timeframe, Candles & Expiry:** Setiap strategi aktif (baik 1 maupun multi-strategi) otomatis memakai `suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, dan `suggested_expiry_hours` masing-masing dari tabel `strategies` (penarikan kline MEXC terdeduplikasi per `(symbol, interval)` agar hemat request). Pre-filter `Min/Max ATR (%)` memakai baseline `Min15` yang otomatis diskalakan `√(interval/15m)` sesuai LTF strategi.
 - **Strategy Registry di MySQL (`strategies`):**
-  - Menyimpan nama/kode strategi (bisa diedit mis. akhiran `_SWING`, `_INTRADAY`, `_SCALP`), tipe trading (`trade_style`), estimasi lama trade (`holding_period`), konfigurasi scan per strategi (`suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, `suggested_expiry_hours`), minimum R:R (`min_rr`), toggle aktif/nonaktif (`is_active`), dan isi `prompt_text`.
+  - Menyimpan nama/kode strategi (bisa diedit mis. akhiran `_SWING`, `_INTRADAY`, `_SCALP`), tipe trading (`trade_style`), estimasi lama trade (`holding_period`), konfigurasi scan per strategi (`suggested_htf`, `suggested_ltf`, `suggested_kline_limit`, `suggested_expiry_hours`), minimum R:R (`min_rr`), toggle aktif/nonaktif (`is_active`), dan isi `prompt_text` (dapat disinkronkan aman dari `prompts/` lewat `POST /api/strategies/sync-prompts` tanpa menimpa kustomisasi kecuali `?force=true`).
   - Bawaan awal (auto-seeded dari `prompts/*.txt`):
     - `TREND_PULLBACK` (`INTRADAY`, 4–24 Jam, HTF `Min60` / LTF `Min15`, min R:R `1.8`)
     - `BREAKOUT_MOMENTUM` (`INTRADAY_SWING`, 4–48 Jam, HTF `Min60` / LTF `Min15`, min R:R `2.0`)
     - `MEAN_REVERSION_SCALP` (`SCALP`, 1–6 Jam, HTF `Min30` / LTF `Min5`, min R:R `1.5`)
-- **Deterministic Risk & Math Guard:** Menolak confidence di bawah threshold (`min_confidence`), memvalidasi geometri harga `LONG`/`SHORT`, menghitung ulang R:R secara matematis terhadap `min_rr` strategi terkait di database, dan mencegah duplikasi setup aktif (`OPEN`, `ENTRY_HIT`, `EXTENDED`, `MANUAL_TAKEN`) untuk pair & arah yang sama.
+- **Deterministic Risk & Math Guard + Reasoning-First AI:**
+  - Skema output AI (`AISetupDecision`) menempatkan `htf_analysis`, `ltf_trigger_analysis`, dan `checklist` konfluensi sebelum `decision` & level harga, dilengkapi 1× retry otomatis bila JSON/validasi gagal, serta pelacakan `prompt_version` & endpoint kalibrasi `GET /api/analytics/calibration`.
+  - Validator menolak `confidence < min_confidence`, memverifikasi konsistensi `checklist`, memvalidasi jarak SL (`0.35x–5.0x ATR14 LTF`) dan kewajaran jarak `LIMIT`/`MARKET` (entry `MARKET` di-re-anchor ke `last_price` aktual), menghitung ulang R:R (termasuk buffer fee round-trip `0.04%`) terhadap `min_rr` strategi, serta mencegah duplikasi maupun konflik arah berlawanan (`LONG` vs `SHORT`) pada pair yang sama.
 - **Outcome Tracker Adaptif & Manajemen Status Lengkap:**
   - Mendukung **10 status**: `OPEN`, `ENTRY_HIT`, `EXTENDED`, `MANUAL_TAKEN`, `MANUAL_SKIPPED`, `HIT_TP`, `HIT_SL`, `EXPIRED`, `CLOSED_MANUAL_TP`, `CLOSED_MANUAL_CL`.
   - Tracker menggunakan interval adaptif (`Min1` / `Min5` / `Min15`) dan live ticker `lastPrice` sehingga perubahan Entry, SL, dan TP pada posisi `LONG` maupun `SHORT` tetap akurat bahkan saat harga bergerak cepat antar siklus cek (min 15 detik). Status `EXTENDED` mempertahankan statusnya walaupun Entry tersentuh (`entry_hit_at` tetap dicatat + badge `ENTRY`) dan memprioritaskan `expiry_hours` dari snapshot scan run terkait.
@@ -122,7 +124,7 @@ Setelah aplikasi berjalan pada port default `8001`:
    - **Mode Scanner & Jadwal:** `Mode Scanner` (`Auto` / `Manual`), `Scan Interval (Menit)`, dan `Tracker Interval (Detik)` *(minimal `15` detik; background tracker berjalan otomatis di backend selama server hidup)*.
    - **Market Scanner & Strategi:** `Top N Pairs` (`1–100`) dan checklist `Active Strategies` (diambil dari tabel `strategies` di MySQL).
    - **MEXC Futures API & LLM Runtime:** `MEXC Base URL`, `MEXC Proxy URL (Opsional)`, `MEXC Concurrency`, `LLM Timeout (s)`, `LLM Concurrency`, dan `LLM Max Tokens` (`512–8192`, mencegah reservasi kredit berlebih di OpenRouter).
-   - **Pre-Filter & Risk Guard:** `Min 24h Quote Volume (USDT)`, `Max 24h Quote Volume (USDT)` (`0 = tanpa batas atas`), `Min ATR (%)`, `Max ATR (%)`, dan `Min AI Confidence (%)`.
+   - **Pre-Filter & Risk Guard:** `Min 24h Quote Volume (USDT)`, `Max 24h Quote Volume (USDT)` (`0 = tanpa batas atas`), `Min ATR (%) — Baseline Min15` & `Max ATR (%) — Baseline Min15` *(otomatis diskalakan `√(interval/15m)` per LTF strategi)*, dan `Min AI Confidence (%)`.
 
    **Pengaturan Per-Strategi (Tabel Database `strategies`):**
    - Melalui **Kelola Strategi & Prompt Aturan AI**, Anda dapat menambah strategi baru (`+ Tambah Strategi Baru` atau **Import JSON**), mengubah kode nama (mis. `_SWING`/`_SCALP`), `trade_style`, estimasi **lama trade (`holding_period`)**, `HTF`, `LTF`, `Candles (suggested_kline_limit)`, `Setup Expiry (suggested_expiry_hours)`, `min_rr`, serta `prompt_text`.
@@ -182,7 +184,7 @@ ATURAN EVALUASI KETAT:
    - Kondisi `BULLISH_ALIGNED` / `BEARISH_ALIGNED` bernilai konfluensi tinggi (A-Grade). Kondisi `MIXED` tetap bisa dipertimbangkan (B-Grade) selama harga tegas di atas EMA 50/200 (LONG) atau di bawah EMA 50/200 (SHORT). Hanya wajib `NO_TRADE` bila HTF sangat choppy (`FLAT_RANGING` datar berimpit tanpa arah jelas).
 2. Cari pullback sehat di Lower Timeframe (LTF sesuai field `interval` di `ltf_15m`):
    - Tunggu harga melakukan pullback terkendali ke area EMA 21 / EMA 50 LTF atau area support/resistance flip zone yang searah dengan tren HTF.
-   - Konfluensi tambahan (menaikkan confidence ke 80+): candle rejection/rebound searah tren di `recent_candles`, DSS Bressert (`dss` memotong/naik dari area jenuh), dan RSI 14 sehat (tidak overextended jauh dari EMA 21).
+   - Konfluensi tambahan (menaikkan confidence ke 80+): candle rejection/rebound searah tren di `recent_candles`, DSS Bressert (`dss_cross_up` / `dss_cross_down` dari area jenuh), dan RSI 14 sehat (tidak overextended jauh dari EMA 21).
 3. Penentuan Level Eksekusi (LONG atau SHORT):
    - Entry Price: harga limit di area pullback/flip zone atau market jika konfirmasi candle baru saja selesai di zona pullback.
    - Stop Loss: letakkan di balik recent swing low (untuk LONG) atau recent swing high (untuk SHORT) ditambah buffer ATR 14 LTF sekitar 0.3x hingga 0.5x ATR.
@@ -193,7 +195,7 @@ ATURAN EVALUASI KETAT:
    - Kembalikan decision="NO_TRADE", entry_type="NONE", serta entry_price=null, stop_loss=null, take_profit=null, risk_reward_ratio=null jika:
      * Terjadi konflik langsung antara arah tren HTF dan struktur LTF.
      * Harga sudah terlalu jauh extended dari EMA 21 sehingga R:R < 1.8.
-     * Struktur terlalu choppy / confidence objektif Anda di bawah ambang Risk Guard.
+     * Struktur terlalu choppy / confidence objektif < 70.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "TREND_PULLBACK".
 ```
@@ -218,7 +220,7 @@ ATURAN EVALUASI KETAT:
    - Take Profit: berdasarkan proyeksi lebar range konsolidasi atau area likuiditas / resistance-support mayor berikutnya.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 2.0. Jika tidak mencapai 2.0 secara realistis, wajib NO_TRADE.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.2, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik HTF ekstrem, atau confidence objektif di bawah ambang Risk Guard.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika volume_ratio < 1.2, terlihat fakeout/wick penolakan besar, struktur tidak jelas, konflik HTF ekstrem, atau confidence objektif < 70.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "BREAKOUT_MOMENTUM".
 ```
@@ -234,15 +236,15 @@ ATURAN EVALUASI KETAT:
    - Strategi ini optimal saat `market_regime` adalah `"RANGING"` (`FLAT_RANGING` atau `MIXED` dengan range jelas dan harga memantul di antara batas S/R).
    - Jika pasar sedang trending searah sangat kuat atau `HIGH_VOLATILITY_CHOP` liar tanpa batas range jelas, wajib pilih NO_TRADE.
 2. Syarat Sinyal Pantulan:
-   - LONG: Harga berada di dekat `nearest_support` / lower range dengan tanda perlambatan jual (rejection wick bawah, candle berbalik bullish) DAN RSI 14 / DSS LTF mulai jenuh jual (ekstrem `< 30` bernilai A-Grade 80+; atau `30–38` yang mulai berbalik naik `rsi14 > prev_rsi14` untuk B-Grade 70–79).
-   - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas, candle berbalik bearish) DAN RSI 14 / DSS LTF mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
+   - LONG: Harga berada di dekat `nearest_support` / lower range dengan tanda perlambatan jual (rejection wick bawah / `swept_prior_low = true`, candle berbalik bullish) DAN RSI 14 / DSS LTF (`dss_cross_up = true`) mulai jenuh jual (ekstrem `< 30` bernilai A-Grade 80+; atau `30–38` yang mulai berbalik naik `rsi14 > prev_rsi14` untuk B-Grade 70–79).
+   - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas / `swept_prior_high = true`, candle berbalik bearish) DAN RSI 14 / DSS LTF (`dss_cross_down = true`) mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
 3. Penentuan Level Eksekusi:
    - Entry Price: di area pantulan support/resistance saat ini.
    - Stop Loss: letakkan ketat di luar batas range (sekitar 0.5x–0.8x ATR 14 LTF di luar swing support/resistance).
    - Take Profit: target konservatif ke area mid-range (EMA 21/50) atau sisi range yang berlawanan.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 1.5.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market sedang trending kuat melawan arah, belum ada tanda pantulan/pembalikan RSI maupun wick di batas S/R, terdapat breakdown/breakout bervolume besar (`volume_ratio >= 1.8`), atau confidence objektif di bawah ambang Risk Guard.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market sedang trending kuat melawan arah, belum ada tanda pantulan/pembalikan RSI maupun wick di batas S/R, terdapat breakdown/breakout bervolume besar (`volume_ratio >= 1.8`), atau confidence objektif < 70.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "MEAN_REVERSION_SCALP".
 ```
@@ -275,10 +277,11 @@ Kembalikan output HANYA 1 blok JSON valid (tanpa teks tambahan di luar JSON) per
 
 ATURAN WAJIB UNTUK ISI "prompt_text":
 1. Hanya gunakan data indikator yang benar-benar ada di MARKET SNAPSHOT sistem saya:
-   - market_ticker: last_price, fair_price, index_price, change_24h_pct, quote_volume_24h, funding_rate, open_interest_hold_vol, high_24h, low_24h. *(Catatan: tidak ada feed likuidasi terpisah; gunakan funding_rate + open_interest_hold_vol sebagai proksi squeeze/crowding).*
-   - htf_1h (container Higher Timeframe sesuai field "interval") & ltf_15m (container Lower Timeframe sesuai field "interval"): interval, bars_count, close, ema21, ema50, ema200, ema_bias (BULLISH_ALIGNED / BEARISH_ALIGNED / FLAT_RANGING / MIXED), dist_to_ema21_pct, dist_to_ema50_pct, dist_to_ema200_pct, rsi14, prev_rsi14, dss, prev_dss, dss_signal, atr14, atr_pct, vol_ma20, current_volume, volume_ratio, compression_ratio, recent_swing_high, recent_swing_low, nearest_support, nearest_resistance, dist_to_support_pct, dist_to_resistance_pct, recent_candles (open, high, low, close, volume, is_bullish, direction, body_pct, upper_wick_pct, lower_wick_pct).
+   - market_ticker: last_price, fair_price, index_price, change_24h_pct, quote_volume_24h, funding_rate, funding_rate_pct, funding_extreme, open_interest_hold_vol, open_interest_usdt, oi_to_volume_ratio, high_24h, low_24h. *(Catatan: tidak ada feed likuidasi terpisah; gunakan funding_rate + open_interest_usdt sebagai proksi squeeze/crowding).*
+   - htf_1h (container Higher Timeframe sesuai field "interval") & ltf_15m (container Lower Timeframe sesuai field "interval"): interval, bars_count, close, ema21, ema50, ema200, ema_bias (BULLISH_ALIGNED / BEARISH_ALIGNED / FLAT_RANGING / MIXED), ema21_slope_pct, ema50_slope_pct, dist_to_ema21_pct, dist_to_ema50_pct, dist_to_ema200_pct, rsi14, prev_rsi14, dss, prev_dss, dss_signal, prev_dss_signal, dss_cross_up, dss_cross_down, atr14, atr_pct, vol_ma20, current_volume, volume_ratio, compression_ratio, recent_swing_high, recent_swing_low, prior_swing_high, prior_swing_low, swept_prior_high, swept_prior_low, structure_bias (HH_HL / LH_LL / MIXED_RANGE), nearest_support, nearest_resistance, support_is_fallback, resistance_is_fallback, dist_to_support_pct, dist_to_resistance_pct, recent_candles, compact_candles_15.
+   - level_candidates (kandidat SL/TP & R:R terhitung) dan market_context.btc (bias BTC HTF/LTF).
 2. Buat aturan evaluasi bernomor yang jelas: pisahkan syarat WAJIB (struktur tren HTF, pemicu utama LTF, level Entry/SL berbasis swing + buffer ATR, TP ke S/R berikutnya, dan minimum R:R sesuai field "min_rr") dari faktor konfluensi BONUS yang menentukan skor confidence (80-95 untuk A-Grade ideal, 70-79 untuk B-Grade solid layak eksekusi).
-3. Sertakan aturan disiplin NO_TRADE jika struktur utama lemah, HTF/LTF berkonflik langsung, R:R kurang dari minimum, atau confidence objektif di bawah ambang Risk Guard sistem (jangan mem-hardcode angka batas confidence di atas Risk Guard agar tidak bentrok dengan setting user).
+3. Sertakan aturan disiplin NO_TRADE jika struktur utama lemah, HTF/LTF berkonflik langsung, R:R kurang dari minimum, atau confidence objektif < 70 (jangan menebak atau mem-hardcode angka batas filter Risk Guard sistem).
 4. Akhiri "prompt_text" dengan instruksi wajib:
    - Output WAJIB berupa JSON valid tanpa teks tambahan di luar JSON.
    - market_regime harus salah satu dari: "TRENDING_UP", "TRENDING_DOWN", "RANGING", "HIGH_VOLATILITY_CHOP".

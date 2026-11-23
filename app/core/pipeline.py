@@ -3,14 +3,17 @@
 import asyncio
 from datetime import timedelta
 from decimal import Decimal
+import hashlib
 import inspect
 import logging
+import math
 from typing import Any, Optional
 
 import httpx
 from sqlalchemy.orm import Session
 
 from ..ai.analyzer import (
+    ANALYZER_PROMPT_VERSION,
     analyze_market_snapshot,
     load_strategy_prompts_map,
     resolve_active_llm_config,
@@ -18,8 +21,8 @@ from ..ai.analyzer import (
 from ..config import settings
 from ..database import SessionLocal
 from ..models import ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
-from ..scanner.features import prefilter_and_build_snapshot
-from ..scanner.mexc_public import MexcPublicClient
+from ..scanner.features import prefilter_and_build_snapshot, summarize_timeframe
+from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
 from .runtime_settings import resolve_runtime_settings
 from .validator import validate_and_guard_setup
 
@@ -58,6 +61,28 @@ def _resolve_strategy_profiles(
 def resolve_scanner_settings(db: Session) -> dict[str, Any]:
     """Backward-compatible wrapper returning runtime settings from MySQL."""
     return resolve_runtime_settings(db)
+
+
+def _summarize_btc_tf(candles: list[dict[str, Any]], interval: str) -> dict[str, Any] | None:
+    """Compact BTC market context summary for a single timeframe."""
+    if len(candles) < 30:
+        return None
+    s = summarize_timeframe(candles, interval)
+    return {
+        "interval": s["interval"],
+        "close": s["close"],
+        "ema_bias": s["ema_bias"],
+        "ema21_slope_pct": s["ema21_slope_pct"],
+        "rsi14": s["rsi14"],
+        "structure_bias": s["structure_bias"],
+    }
+
+
+def _scale_atr_bounds(min_atr_pct: float, max_atr_pct: float, ltf_interval: str) -> tuple[float, float]:
+    """Scale Min15-baseline ATR% bounds to the strategy's actual LTF interval via sqrt(time)."""
+    ltf_sec = INTERVAL_SECONDS_MAP.get(ltf_interval, 900)
+    scale = math.sqrt(max(60, ltf_sec) / 900.0)
+    return round(min_atr_pct * scale, 4), round(max_atr_pct * scale, 4)
 
 
 class ScanPipeline:
@@ -222,6 +247,21 @@ class ScanPipeline:
                 return_exceptions=True,
             )
 
+            # Ensure BTC_USDT candles are available for global market_context (reuse if already in top_pairs)
+            btc_candles_by_iv: dict[str, list[dict[str, Any]]] = {}
+            for item in pair_results:
+                if not isinstance(item, Exception) and item.get("symbol") == "BTC_USDT":
+                    btc_candles_by_iv = item.get("candles_by_iv") or {}
+                    break
+            if not btc_candles_by_iv and top_pairs:
+                try:
+                    btc_fetched = await asyncio.gather(
+                        *(mexc.get_kline("BTC_USDT", interval=iv, limit=lim) for iv, lim in unique_intervals)
+                    )
+                    btc_candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, btc_fetched)}
+                except Exception as exc:
+                    log.debug("Could not fetch BTC_USDT context klines: %s", exc)
+
         if not llm_cfg.get("api_key"):
             raise RuntimeError(
                 f"LLM API key untuk provider '{llm_cfg['provider']}' kosong. Silakan atur di AI Models & Settings."
@@ -233,6 +273,7 @@ class ScanPipeline:
 
         # Build & cache multi-timeframe snapshots per (symbol, htf, ltf)
         snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
+        btc_context_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
         passed_symbols: set[str] = set()
         ai_tasks: list[tuple[dict[str, Any], str]] = []
 
@@ -244,17 +285,29 @@ class ScanPipeline:
             candles_by_iv = item["candles_by_iv"]
             for strat in strategies:
                 prof = profiles[strat]
+                tf_key = (prof["htf"], prof["ltf"])
+                if tf_key not in btc_context_cache:
+                    btc_htf = _summarize_btc_tf(btc_candles_by_iv.get(prof["htf"], []), prof["htf"])
+                    btc_ltf = _summarize_btc_tf(btc_candles_by_iv.get(prof["ltf"], []), prof["ltf"])
+                    btc_context_cache[tf_key] = (
+                        {"btc": {"htf": btc_htf, "ltf": btc_ltf}} if (btc_htf or btc_ltf) else None
+                    )
                 cache_key = (sym, prof["htf"], prof["ltf"])
                 if cache_key not in snapshot_cache:
+                    eff_min_atr, eff_max_atr = _scale_atr_bounds(
+                        rt_cfg["min_atr_pct"], rt_cfg["max_atr_pct"], prof["ltf"]
+                    )
                     ok, reason, snap = prefilter_and_build_snapshot(
                         symbol=sym,
                         ticker=item["ticker"],
                         htf_candles=candles_by_iv[prof["htf"]],
                         ltf_candles=candles_by_iv[prof["ltf"]],
-                        min_atr_pct=rt_cfg["min_atr_pct"],
-                        max_atr_pct=rt_cfg["max_atr_pct"],
+                        min_atr_pct=eff_min_atr,
+                        max_atr_pct=eff_max_atr,
                         htf_interval=prof["htf"],
                         ltf_interval=prof["ltf"],
+                        contract=item.get("contract"),
+                        market_context=btc_context_cache[tf_key],
                     )
                     snapshot_cache[cache_key] = (ok, reason, snap)
                     if not ok:
@@ -277,6 +330,10 @@ class ScanPipeline:
         db.commit()
 
         prompt_map = load_strategy_prompts_map(db, strategies)
+        prompt_versions = {
+            k: hashlib.sha256(f"{v}\n::{ANALYZER_PROMPT_VERSION}".encode("utf-8")).hexdigest()[:8]
+            for k, v in prompt_map.items()
+        }
         ai_params = inspect.signature(analyze_market_snapshot).parameters
         accepts_system_prompt = "system_prompt" in ai_params
         accepts_max_tokens = "max_tokens" in ai_params
@@ -332,6 +389,7 @@ class ScanPipeline:
                 decision,
                 db=db,
                 min_confidence=rt_cfg["min_confidence"],
+                snapshot=snap,
             )
 
             if not is_valid:
@@ -383,7 +441,10 @@ class ScanPipeline:
                 ],
                 expires_at=now + timedelta(hours=int(strat_expiry_hours)),
                 features_snapshot=snap,
-                ai_payload=normalized.model_dump(),
+                ai_payload={
+                    **normalized.model_dump(),
+                    "prompt_version": prompt_versions.get(strat.strip().upper()),
+                },
             )
             db.add(setup)
             db.flush()

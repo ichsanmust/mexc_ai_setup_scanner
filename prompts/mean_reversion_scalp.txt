@@ -6,14 +6,14 @@ ATURAN EVALUASI KETAT:
    - Strategi ini optimal saat `market_regime` adalah `"RANGING"` (`FLAT_RANGING` atau `MIXED` dengan range jelas dan harga memantul di antara batas S/R).
    - Jika pasar sedang trending searah sangat kuat atau `HIGH_VOLATILITY_CHOP` liar tanpa batas range jelas, wajib pilih NO_TRADE.
 2. Syarat Sinyal Pantulan:
-   - LONG: Harga berada di dekat `nearest_support` / lower range dengan tanda perlambatan jual (rejection wick bawah, candle berbalik bullish) DAN RSI 14 / DSS LTF mulai jenuh jual (ekstrem `< 30` bernilai A-Grade 80+; atau `30–38` yang mulai berbalik naik `rsi14 > prev_rsi14` untuk B-Grade 70–79).
-   - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas, candle berbalik bearish) DAN RSI 14 / DSS LTF mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
+   - LONG: Harga berada di dekat `nearest_support` / lower range dengan tanda perlambatan jual (rejection wick bawah / `swept_prior_low = true`, candle berbalik bullish) DAN RSI 14 / DSS LTF (`dss_cross_up = true`) mulai jenuh jual (ekstrem `< 30` bernilai A-Grade 80+; atau `30–38` yang mulai berbalik naik `rsi14 > prev_rsi14` untuk B-Grade 70–79).
+   - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas / `swept_prior_high = true`, candle berbalik bearish) DAN RSI 14 / DSS LTF (`dss_cross_down = true`) mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
 3. Penentuan Level Eksekusi:
    - Entry Price: di area pantulan support/resistance saat ini.
    - Stop Loss: letakkan ketat di luar batas range (sekitar 0.5x–0.8x ATR 14 LTF di luar swing support/resistance).
    - Take Profit: target konservatif ke area mid-range (EMA 21/50) atau sisi range yang berlawanan.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 1.5.
 4. Disiplin NO_TRADE:
-   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market sedang trending kuat melawan arah, belum ada tanda pantulan/pembalikan RSI maupun wick di batas S/R, terdapat breakdown/breakout bervolume besar (`volume_ratio >= 1.8`), atau confidence objektif di bawah ambang Risk Guard.
+   - Kembalikan decision="NO_TRADE", entry_type="NONE", dan kosongkan level harga (null) jika market sedang trending kuat melawan arah, belum ada tanda pantulan/pembalikan RSI maupun wick di batas S/R, terdapat breakdown/breakout bervolume besar (`volume_ratio >= 1.8`), atau confidence objektif < 70.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "MEAN_REVERSION_SCALP".

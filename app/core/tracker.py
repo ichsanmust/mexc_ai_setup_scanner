@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import TradeSetup, utcnow
-from ..scanner.mexc_public import MexcPublicClient
+from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +95,7 @@ def evaluate_setup_trace(
     last_price: float | None,
     candles_since_open: list[dict[str, Any]],
     now: datetime | None = None,
+    candle_interval: str = "Min1",
 ) -> dict[str, Any]:
     """Chronologically evaluate a setup against candles and live ticker, capturing entry/missed-TP trace."""
     current_time = now or utcnow()
@@ -118,24 +119,36 @@ def evaluate_setup_trace(
 
     since_dt, is_reactivated = _get_tracking_since_dt(setup)
     since_ts = _to_utc_ts(since_dt)
+    step_sec = INTERVAL_SECONDS_MAP.get(candle_interval, 60)
 
     for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
         c_ts = int(candle["time"])
-        if c_ts < (since_ts if is_reactivated else since_ts - 60):
-            continue
+        if is_reactivated:
+            if c_ts < since_ts:
+                continue
+        elif candle_interval == "Min1":
+            if c_ts < since_ts - 60:
+                continue
+        else:
+            if c_ts + step_sec <= since_ts:
+                continue
         c_dt = _from_utc_ts(c_ts)
         high = float(candle["high"])
         low = float(candle["low"])
 
         if direction == "LONG":
+            entered_this_candle = False
             if not entry_touched and low <= entry:
                 entry_touched = True
+                entered_this_candle = True
                 detected_entry_dt = c_dt
             if not entry_touched and high >= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
             hit_sl = low <= sl
-            hit_tp = high >= tp and entry_touched
+            # On coarse candles (> Min1), don't assume LIMIT entry filled before TP inside the same bar
+            allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
+            hit_tp = high >= tp and allow_tp
             if hit_sl and hit_tp:
                 return {
                     "new_status": "HIT_SL",
@@ -164,14 +177,17 @@ def evaluate_setup_trace(
                     "missed_tp_price": detected_missed_tp_price,
                 }
         elif direction == "SHORT":
+            entered_this_candle = False
             if not entry_touched and high >= entry:
                 entry_touched = True
+                entered_this_candle = True
                 detected_entry_dt = c_dt
             if not entry_touched and low <= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
             hit_sl = high >= sl
-            hit_tp = low <= tp and entry_touched
+            allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
+            hit_tp = low <= tp and allow_tp
             if hit_sl and hit_tp:
                 return {
                     "new_status": "HIT_SL",
@@ -291,12 +307,19 @@ def evaluate_setup_against_market(
     last_price: float | None,
     candles_since_open: list[dict[str, Any]],
     now: datetime | None = None,
+    candle_interval: str = "Min1",
 ) -> tuple[str | None, float | None]:
     """Determine if an active setup reached ENTRY_HIT, HIT_TP, HIT_SL, or EXPIRED.
 
     Returns (new_status, resolved_price) or (None, None) if unchanged.
     """
-    trace = evaluate_setup_trace(setup, last_price=last_price, candles_since_open=candles_since_open, now=now)
+    trace = evaluate_setup_trace(
+        setup,
+        last_price=last_price,
+        candles_since_open=candles_since_open,
+        now=now,
+        candle_interval=candle_interval,
+    )
     return trace["new_status"], trace["resolved_price"]
 
 
@@ -332,8 +355,10 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
             oldest_by_symbol[setup.symbol] = since_dt
 
     kline_map: dict[str, list[dict[str, Any]]] = {}
+    interval_by_symbol: dict[str, str] = {}
     for sym in sorted(oldest_by_symbol):
         interval, limit = _select_kline_params(oldest_by_symbol[sym], now)
+        interval_by_symbol[sym] = interval
         try:
             kline_map[sym] = await mexc_client.get_kline(sym, interval=interval, limit=limit)
         except Exception as exc:
@@ -352,6 +377,7 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
             last_price=last_price,
             candles_since_open=candles,
             now=now,
+            candle_interval=interval_by_symbol.get(setup.symbol, "Min1"),
         )
 
         # Record intermediate events even if overall status remains OPEN

@@ -456,3 +456,45 @@ async def test_extended_status_preserved_when_entry_touched_and_ignores_stale_ca
     assert s_ext_fresh.entry_hit_at is not None
     assert s_ext_fresh.status_history[-1]["event"] == "ENTRY_HIT"
 
+
+def test_tracker_coarse_candle_defers_same_bar_limit_tp_and_keeps_overlapping_bucket():
+    from datetime import datetime, timedelta, timezone
+
+    # Setup created at 12:07 UTC inside a Min15 bucket that started at 12:00 UTC
+    t_open = datetime(2026, 1, 1, 12, 7, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    bucket_1200 = int(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    bucket_1215 = bucket_1200 + 900
+
+    setup_limit = _make_custom_setup(
+        decision="LONG",
+        status="OPEN",
+        entry_type="LIMIT",
+        entry=100.0,
+        sl=95.0,
+        tp=110.0,
+        created_at=t_open,
+    )
+
+    # 1. Overlapping Min15 candle (12:00..12:15) hits BOTH entry (99.5) and TP (110.5) -> conservative ENTRY_HIT, not HIT_TP
+    st, resolved = evaluate_setup_against_market(
+        setup_limit,
+        last_price=105.0,
+        candles_since_open=[{"time": bucket_1200, "open": 102.0, "high": 110.5, "low": 99.5}],
+        now=t_open + timedelta(minutes=8),
+        candle_interval="Min15",
+    )
+    assert st == "ENTRY_HIT"
+    assert resolved is None
+
+    # 2. Once ENTRY_HIT, subsequent candle hitting TP transitions to HIT_TP
+    setup_limit.status = "ENTRY_HIT"
+    st2, resolved2 = evaluate_setup_against_market(
+        setup_limit,
+        last_price=111.0,
+        candles_since_open=[{"time": bucket_1215, "open": 105.0, "high": 111.5, "low": 104.0}],
+        now=t_open + timedelta(minutes=25),
+        candle_interval="Min15",
+    )
+    assert st2 == "HIT_TP"
+    assert resolved2 == 110.0
+

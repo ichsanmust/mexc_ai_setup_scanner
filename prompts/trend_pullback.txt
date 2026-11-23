@@ -7,7 +7,7 @@ ATURAN EVALUASI KETAT:
    - Kondisi `BULLISH_ALIGNED` / `BEARISH_ALIGNED` bernilai konfluensi tinggi (A-Grade). Kondisi `MIXED` tetap bisa dipertimbangkan (B-Grade) selama harga tegas di atas EMA 50/200 (LONG) atau di bawah EMA 50/200 (SHORT). Hanya wajib `NO_TRADE` bila HTF sangat choppy (`FLAT_RANGING` datar berimpit tanpa arah jelas).
 2. Cari pullback sehat di Lower Timeframe (LTF sesuai field `interval` di `ltf_15m`):
    - Tunggu harga melakukan pullback terkendali ke area EMA 21 / EMA 50 LTF atau area support/resistance flip zone yang searah dengan tren HTF.
-   - Konfluensi tambahan (menaikkan confidence ke 80+): candle rejection/rebound searah tren di `recent_candles`, DSS Bressert (`dss` memotong/naik dari area jenuh), dan RSI 14 sehat (tidak overextended jauh dari EMA 21).
+   - Konfluensi tambahan (menaikkan confidence ke 80+): candle rejection/rebound searah tren di `recent_candles`, DSS Bressert (`dss_cross_up` / `dss_cross_down` dari area jenuh), dan RSI 14 sehat (tidak overextended jauh dari EMA 21).
 3. Penentuan Level Eksekusi (LONG atau SHORT):
    - Entry Price: harga limit di area pullback/flip zone atau market jika konfirmasi candle baru saja selesai di zona pullback.
    - Stop Loss: letakkan di balik recent swing low (untuk LONG) atau recent swing high (untuk SHORT) ditambah buffer ATR 14 LTF sekitar 0.3x hingga 0.5x ATR.
@@ -18,6 +18,6 @@ ATURAN EVALUASI KETAT:
    - Kembalikan decision="NO_TRADE", entry_type="NONE", serta entry_price=null, stop_loss=null, take_profit=null, risk_reward_ratio=null jika:
      * Terjadi konflik langsung antara arah tren HTF dan struktur LTF.
      * Harga sudah terlalu jauh extended dari EMA 21 sehingga R:R < 1.8.
-     * Struktur terlalu choppy / confidence objektif Anda di bawah ambang Risk Guard.
+     * Struktur terlalu choppy / confidence objektif < 70.
 5. Output WAJIB berupa JSON valid sesuai schema yang diminta tanpa teks tambahan di luar JSON.
    - strategy_used harus persis "TREND_PULLBACK".

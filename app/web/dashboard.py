@@ -32,6 +32,7 @@ from ..database import Base, SessionLocal, engine, get_db
 from ..models import AIModel, AppSetting, ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
 from ..scanner.features import compute_indicators_df
 from ..scanner.mexc_public import MexcPublicClient
+from ..seed import sync_builtin_prompts
 from ..schemas import (
     AIModelCreate,
     AIModelOut,
@@ -1219,6 +1220,76 @@ def get_strategy_analytics(
     )
 
 
+def _aggregate_calibration_group(group: list[TradeSetup]) -> dict[str, Any]:
+    """Compute win-rate and R-expectancy for a group of setups."""
+    wins = [
+        s
+        for s in group
+        if s.status == "CLOSED_MANUAL_TP" or (s.status == "HIT_TP" and _has_setup_entered(s))
+    ]
+    losses = [
+        s
+        for s in group
+        if s.status == "CLOSED_MANUAL_CL" or (s.status == "HIT_SL" and _has_setup_entered(s))
+    ]
+    decided = len(wins) + len(losses)
+    win_rate = round((len(wins) / decided) * 100.0, 2) if decided > 0 else 0.0
+    total_r = sum(float(s.risk_reward_ratio) for s in wins) - float(len(losses))
+    expectancy_r = round(total_r / decided, 3) if decided > 0 else 0.0
+    avg_rr = round(sum(float(s.risk_reward_ratio) for s in group) / len(group), 2) if group else 0.0
+    return {
+        "total": len(group),
+        "decided": decided,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": win_rate,
+        "expectancy_r": expectancy_r,
+        "avg_rr": avg_rr,
+    }
+
+
+@app.get("/api/analytics/calibration")
+def get_calibration_analytics(
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    tz_offset_minutes: int = Query(default=-420, alias="tz_offset"),
+    db: Session = Depends(get_db),
+):
+    """Return win-rate & R-expectancy calibration by confidence bucket, LLM model, and prompt_version."""
+    rows = _apply_created_date_filter(db.query(TradeSetup), start_date, end_date, tz_offset_minutes).all()
+
+    conf_ranges = [
+        ("<70", 0, 69),
+        ("70-74", 70, 74),
+        ("75-79", 75, 79),
+        ("80-84", 80, 84),
+        ("85-89", 85, 89),
+        ("90-100", 90, 100),
+    ]
+    confidence_buckets = []
+    for label, lo, hi in conf_ranges:
+        grp = [s for s in rows if lo <= int(s.confidence or 0) <= hi]
+        confidence_buckets.append({"bucket": label, **_aggregate_calibration_group(grp)})
+
+    model_groups: dict[str, list[TradeSetup]] = {}
+    prompt_groups: dict[str, list[TradeSetup]] = {}
+    for r in rows:
+        model_groups.setdefault(r.llm_model or "unknown", []).append(r)
+        pv = (r.ai_payload or {}).get("prompt_version") if isinstance(r.ai_payload, dict) else None
+        prompt_groups.setdefault(pv or "legacy", []).append(r)
+
+    return {
+        "total_setups": len(rows),
+        "confidence_buckets": confidence_buckets,
+        "by_model": [
+            {"llm_model": k, **_aggregate_calibration_group(v)} for k, v in sorted(model_groups.items())
+        ],
+        "by_prompt_version": [
+            {"prompt_version": k, **_aggregate_calibration_group(v)} for k, v in sorted(prompt_groups.items())
+        ],
+    }
+
+
 # --- Strategy Registry Endpoints (MySQL-backed) ---
 
 
@@ -1236,6 +1307,16 @@ def list_strategies(db: Session = Depends(get_db)):
     """List all trading strategies and prompt rules stored in MySQL."""
     rows = db.query(Strategy).order_by(Strategy.id.asc()).all()
     return [StrategyOut.model_validate(r) for r in rows]
+
+
+@app.post("/api/strategies/sync-prompts")
+def sync_strategies_from_files(
+    force: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    """Sync strategy prompt_text from prompts/ files without overwriting customized prompts unless force=true."""
+    result = sync_builtin_prompts(db, force=force)
+    return {"status": "OK", "force": force, **result}
 
 
 @app.post("/api/strategies", response_model=StrategyOut, status_code=status.HTTP_201_CREATED)

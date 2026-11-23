@@ -2245,6 +2245,40 @@ function selectSetup(setup) {
   }
   document.getElementById("d-rationale").textContent = setup.rationale;
   document.getElementById("d-invalidation").textContent = setup.invalidation_reason;
+
+  const reasonBox = document.getElementById("d-ai-reasoning");
+  if (reasonBox) {
+    const aiPay = setup.ai_payload || {};
+    const htfTxt = (aiPay.htf_analysis || "").trim();
+    const ltfTxt = (aiPay.ltf_trigger_analysis || "").trim();
+    const chk = aiPay.checklist && typeof aiPay.checklist === "object" ? aiPay.checklist : null;
+    if (htfTxt || ltfTxt || chk) {
+      const chkLabels = [
+        ["htf_trend_ok", "HTF Trend"],
+        ["pullback_or_level_ok", "Level/Pullback"],
+        ["trigger_candle_ok", "Trigger Candle"],
+        ["volume_ok", "Volume"],
+        ["momentum_ok", "Momentum"],
+        ["rr_ok", "R:R"],
+      ];
+      const chkHtml = chk
+        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">${chkLabels
+            .map(([k, lbl]) => {
+              const ok = Boolean(chk[k]);
+              const cls = ok ? "badge-hit-tp" : "badge-hit-sl";
+              return `<span class="badge ${cls}">${ok ? "✓" : "✗"} ${lbl}</span>`;
+            })
+            .join("")}</div>`
+        : "";
+      reasonBox.innerHTML = `${htfTxt ? `<h4>HTF Analysis</h4><p>${escapeHtml(htfTxt)}</p>` : ""}${
+        ltfTxt ? `<h4>LTF Trigger Analysis</h4><p>${escapeHtml(ltfTxt)}</p>` : ""
+      }${chkHtml ? `<h4>Checklist Konfluensi</h4>${chkHtml}` : ""}`;
+      reasonBox.classList.remove("hidden");
+    } else {
+      reasonBox.innerHTML = "";
+      reasonBox.classList.add("hidden");
+    }
+  }
   document.getElementById("manual-entry-input").value = setup.manual_entry_price ?? "";
   document.getElementById("manual-notes-input").value = setup.manual_notes || "";
 

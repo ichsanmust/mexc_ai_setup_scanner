@@ -105,6 +105,7 @@ async def test_pipeline_run_once_persists_valid_setup_and_logs_rejections(db_ses
         assert len(setups) == 1
         assert setups[0].symbol == "BTC_USDT"
         assert setups[0].status == "OPEN"
+        assert len(setups[0].ai_payload.get("prompt_version", "")) == 8
         assert len(evals) == 1
         assert evals[0].raw_decision == "NO_TRADE"
         assert runs[-1].status == "COMPLETED"
@@ -217,9 +218,12 @@ async def test_pipeline_multi_strategy_resolves_per_strategy_timeframes_and_dedu
     )
     assert summary["status"] == "COMPLETED"
     assert summary["ai_analyzed"] == 3
-    # Min60 and Min15 must only be fetched ONCE even though two strategies use them
-    assert len(fetched_intervals) == 4
-    assert set(fetched_intervals) == {
+    # Min60 and Min15 must only be fetched ONCE per symbol even though two strategies use them
+    eth_fetched = [x for x in fetched_intervals if x[0] == "ETH_USDT"]
+    btc_fetched = [x for x in fetched_intervals if x[0] == "BTC_USDT"]
+    assert len(eth_fetched) == 4
+    assert len(btc_fetched) == 4
+    assert set(eth_fetched) == {
         ("ETH_USDT", "Min60"),
         ("ETH_USDT", "Min15"),
         ("ETH_USDT", "Min30"),
@@ -264,9 +268,12 @@ async def test_pipeline_single_strategy_also_uses_per_strategy_timeframe(db_sess
         return _make_sample_candles(80)
 
     seen_single: list[tuple[str, str]] = []
+    seen_contexts: list[dict] = []
 
     async def fake_analyze(snapshot, strategy, llm_config, client=None, timeout_seconds=None):
         seen_single.append((snapshot["htf_1h"]["interval"], snapshot["ltf_15m"]["interval"]))
+        if snapshot.get("market_context"):
+            seen_contexts.append(snapshot["market_context"])
         return (
             AISetupDecision(
                 symbol=snapshot["symbol"],
@@ -290,3 +297,6 @@ async def test_pipeline_single_strategy_also_uses_per_strategy_timeframe(db_sess
     summary = await pipe.run_once(strategies=["MEAN_REVERSION_SCALP"], top_n=5)
     assert summary["status"] == "COMPLETED"
     assert seen_single == [("Min30", "Min5")]
+    assert len(seen_contexts) == 1
+    assert seen_contexts[0]["btc"]["htf"]["interval"] == "Min30"
+    assert seen_contexts[0]["btc"]["ltf"]["interval"] == "Min5"

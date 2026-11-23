@@ -1,6 +1,7 @@
 """Initial database seeding for AI models and LLM provider settings."""
 
 from decimal import Decimal
+import json
 import logging
 
 from sqlalchemy.orm import Session
@@ -424,3 +425,49 @@ def seed_all(db: Session) -> None:
 
     db.commit()
     log.info("Database seed completed (active provider=%s, model=%s).", env_provider, active_model.model_id if active_model else "none")
+
+
+_LEGACY_PROMPT_MARKERS = ("ambang min_confidence Risk Guard", "ambang Risk Guard")
+
+
+def sync_builtin_prompts(db: Session, force: bool = False) -> dict[str, list[str]]:
+    """Sync strategy prompt_text from prompts/ (.txt & .json) without overwriting customized prompts.
+
+    When force=False, only updates strategies whose prompt_text is empty or still contains
+    legacy Risk Guard threshold phrasing.
+    """
+    source_prompts: dict[str, str] = {}
+    for strat_name, filename in STRATEGY_PROMPT_FILES.items():
+        path = PROMPTS_DIR / filename
+        if path.exists():
+            source_prompts[strat_name.upper()] = path.read_text(encoding="utf-8")
+
+    for json_path in sorted(PROMPTS_DIR.glob("*.json")):
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            name = str(payload.get("name") or "").strip().upper()
+            text = str(payload.get("prompt_text") or "").strip()
+            if name and text:
+                source_prompts[name] = text
+        except Exception as exc:
+            log.warning("Skipping invalid preset %s during prompt sync: %s", json_path.name, exc)
+
+    updated: list[str] = []
+    skipped: list[str] = []
+    for row in db.query(Strategy).order_by(Strategy.id.asc()).all():
+        key = row.name.strip().upper()
+        new_text = source_prompts.get(key)
+        if not new_text:
+            continue
+        cur_text = row.prompt_text or ""
+        has_legacy = any(marker in cur_text for marker in _LEGACY_PROMPT_MARKERS)
+        if force or not cur_text.strip() or (row.is_builtin and has_legacy) or has_legacy:
+            if cur_text != new_text:
+                row.prompt_text = new_text
+                updated.append(key)
+        else:
+            skipped.append(key)
+
+    if updated:
+        db.commit()
+    return {"updated": updated, "skipped": skipped}

@@ -119,3 +119,84 @@ def test_validator_blocks_duplicate_open_setup(db_session):
     assert ok_other is True
     assert reason_other == "APPROVED"
     assert norm_other.strategy_used == "BREAKOUT_MOMENTUM"
+
+    # Opposite direction (SHORT) on the same symbol with active LONG setup must be blocked
+    opp_strat = _make_decision(
+        symbol="ETH_USDT",
+        decision="SHORT",
+        strategy_used="MEAN_REVERSION_SCALP",
+        entry_price=3000.0,
+        stop_loss=3050.0,
+        take_profit=2900.0,
+    )
+    ok_opp, _, reason_opp = validate_and_guard_setup(opp_strat, db=db)
+    assert ok_opp is False
+    assert "Conflicting active LONG setup" in reason_opp
+
+
+def test_validator_enforces_atr_bounds_and_market_limit_entry_sanity():
+    snap = {
+        "market_ticker": {"last_price": 100.0},
+        "ltf_15m": {"close": 100.0, "atr14": 2.0},
+    }
+    # 1. SL too tight (< 0.35 * 2.0 = 0.70)
+    tight_sl = _make_decision(
+        entry_type="LIMIT", entry_price=100.0, stop_loss=99.6, take_profit=105.0, risk_reward_ratio=12.5
+    )
+    ok_t, _, reason_t = validate_and_guard_setup(tight_sl, snapshot=snap)
+    assert ok_t is False
+    assert "SL too tight" in reason_t
+
+    # 2. LIMIT LONG placed way above live price (> 100 + 0.25*2 = 100.5)
+    bad_limit = _make_decision(entry_type="LIMIT", entry_price=102.0, stop_loss=99.0, take_profit=110.0)
+    ok_l, _, reason_l = validate_and_guard_setup(bad_limit, snapshot=snap)
+    assert ok_l is False
+    assert "above live price" in reason_l
+
+    # 3. MARKET entry within 0.75x ATR (1.5) is re-anchored to live_price=100.0
+    mkt = _make_decision(entry_type="MARKET", entry_price=100.8, stop_loss=98.0, take_profit=105.0)
+    ok_m, norm_m, _ = validate_and_guard_setup(mkt, snapshot=snap)
+    assert ok_m is True
+    assert norm_m.entry_price == 100.0
+
+
+def test_validator_crosschecks_checklist_when_present():
+    from app.schemas import SetupChecklist
+
+    # 1. rr_ok=False must be rejected
+    bad_rr = _make_decision(
+        checklist=SetupChecklist(
+            htf_trend_ok=True,
+            pullback_or_level_ok=True,
+            trigger_candle_ok=True,
+            volume_ok=True,
+            momentum_ok=True,
+            rr_ok=False,
+        )
+    )
+    ok_rr, _, reason_rr = validate_and_guard_setup(bad_rr)
+    assert ok_rr is False
+    assert "Checklist inconsistent" in reason_rr
+
+    # 2. volume_ok=True when actual LTF volume_ratio < 1.0 must be rejected
+    snap_low_vol = {
+        "market_ticker": {"last_price": 100.0},
+        "ltf_15m": {"close": 100.0, "atr14": 2.0, "volume_ratio": 0.65},
+    }
+    bad_vol = _make_decision(
+        entry_type="LIMIT",
+        entry_price=100.0,
+        stop_loss=97.0,
+        take_profit=106.0,
+        checklist=SetupChecklist(
+            htf_trend_ok=True,
+            pullback_or_level_ok=True,
+            trigger_candle_ok=True,
+            volume_ok=True,
+            momentum_ok=True,
+            rr_ok=True,
+        ),
+    )
+    ok_vol, _, reason_vol = validate_and_guard_setup(bad_vol, snapshot=snap_low_vol)
+    assert ok_vol is False
+    assert "volume_ok is true" in reason_vol

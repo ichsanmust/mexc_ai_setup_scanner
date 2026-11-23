@@ -7,6 +7,7 @@ import time
 from typing import Any, Optional
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from ..config import (
@@ -20,6 +21,8 @@ from ..models import AIModel, AppSetting, Strategy
 from ..schemas import AISetupDecision
 
 log = logging.getLogger(__name__)
+
+ANALYZER_PROMPT_VERSION = "v2"
 
 
 def _get_setting_map(db: Session | None) -> dict[str, str]:
@@ -128,16 +131,67 @@ def load_strategy_prompts_map(db: Session | None, strategies: list[str]) -> dict
     return prompts
 
 
+def _build_strict_decision_json_schema() -> dict[str, Any]:
+    """Build OpenAI-compatible strict JSON Schema with reasoning-first field order.
+
+    Every property is listed in `required`, `additionalProperties` is false on all objects,
+    and nullable fields use `["number", "null"]` without `default` so strict mode succeeds.
+    """
+    checklist_props = {
+        "htf_trend_ok": {"type": "boolean"},
+        "pullback_or_level_ok": {"type": "boolean"},
+        "trigger_candle_ok": {"type": "boolean"},
+        "volume_ok": {"type": "boolean"},
+        "momentum_ok": {"type": "boolean"},
+        "rr_ok": {"type": "boolean"},
+    }
+    properties: dict[str, Any] = {
+        "symbol": {"type": "string"},
+        "strategy_used": {"type": "string"},
+        "htf_analysis": {"type": "string"},
+        "ltf_trigger_analysis": {"type": "string"},
+        "checklist": {
+            "type": "object",
+            "properties": checklist_props,
+            "required": list(checklist_props.keys()),
+            "additionalProperties": False,
+        },
+        "market_regime": {
+            "type": "string",
+            "enum": ["TRENDING_UP", "TRENDING_DOWN", "RANGING", "HIGH_VOLATILITY_CHOP"],
+        },
+        "decision": {
+            "type": "string",
+            "enum": ["LONG", "SHORT", "NO_TRADE"],
+        },
+        "entry_type": {
+            "type": "string",
+            "enum": ["MARKET", "LIMIT", "NONE"],
+        },
+        "entry_price": {"type": ["number", "null"]},
+        "stop_loss": {"type": ["number", "null"]},
+        "take_profit": {"type": ["number", "null"]},
+        "risk_reward_ratio": {"type": ["number", "null"]},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+        "invalidation_reason": {"type": "string"},
+        "rationale": {"type": "string"},
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties.keys()),
+        "additionalProperties": False,
+    }
+
+
 def _build_response_format_schema() -> dict[str, Any]:
-    """Build OpenAI-compatible json_schema response_format from AISetupDecision."""
-    schema = AISetupDecision.model_json_schema()
-    schema["additionalProperties"] = False
+    """Build OpenAI-compatible json_schema response_format from strict decision schema."""
     return {
         "type": "json_schema",
         "json_schema": {
             "name": "mexc_trade_setup_decision",
             "strict": True,
-            "schema": schema,
+            "schema": _build_strict_decision_json_schema(),
         },
     }
 
@@ -185,18 +239,28 @@ async def analyze_market_snapshot(
         raise RuntimeError(f"Base URL untuk provider '{provider}' belum diisi.")
 
     resolved_prompt = system_prompt if system_prompt is not None else load_strategy_prompt(strategy, db=db)
-    schema_json_str = json.dumps(AISetupDecision.model_json_schema(), ensure_ascii=False)
+    schema_json_str = json.dumps(_build_strict_decision_json_schema(), ensure_ascii=False)
     htf_iv = (snapshot.get("htf_1h") or {}).get("interval", "HTF")
     ltf_iv = (snapshot.get("ltf_15m") or {}).get("interval", "LTF")
-    eff_min_conf = int(min_confidence if min_confidence is not None else settings.min_confidence)
+    _ = min_confidence  # Kept in signature for caller compatibility; threshold is enforced deterministically in validator
     user_message = (
         f"Evaluasi snapshot market MEXC Futures berikut untuk strategi {strategy}.\n"
         f"Catatan Struktur Snapshot: key 'htf_1h' berisi ringkasan Higher Timeframe aktual ({htf_iv}) "
         f"dan key 'ltf_15m' berisi ringkasan Lower Timeframe aktual ({ltf_iv}); selalu rujuk field 'interval' aktual tersebut. "
+        f"Indikator & recent_candles dihitung murni dari candle yang sudah close (jika ada forming_candle, itu hanya konteks berjalan). "
         f"Potensi squeeze/crowding dinilai dari funding_rate + open_interest_hold_vol (tanpa feed likuidasi terpisah).\n"
-        f"Catatan Risk Guard & Scoring: Ambang min_confidence aktif sistem saat ini adalah {eff_min_conf}%. "
-        f"Nilai confidence secara objektif sesuai kualitas konfluensi (80-95: A-Grade ideal, {eff_min_conf}-79: B-Grade solid layak eksekusi, <{eff_min_conf}: lemah/berkonflik -> NO_TRADE). "
-        f"Jika struktur utama & minimum R:R strategi terpenuhi dan penilaian objektif Anda >= {eff_min_conf}, kembalikan setup LONG/SHORT (jangan dipaksa NO_TRADE hanya karena bukan A+).\n"
+        f"Kamus Field Tambahan:\n"
+        f"- swept_prior_low / swept_prior_high + prior_swing_low / prior_swing_high: flag sweep & reclaim yang sudah dihitung kode; pakai sebagai sumber utama deteksi sweep.\n"
+        f"- dss_cross_up / dss_cross_down: cross DSS terhadap dss_signal yang sudah dihitung kode.\n"
+        f"- structure_bias (HH_HL / LH_LL / MIXED_RANGE), ema21_slope_pct, ema50_slope_pct: arah struktur & kemiringan EMA.\n"
+        f"- compact_candles_15: 15 candle closed terakhir format {{o,h,l,c,vr}} (vr = volume_ratio).\n"
+        f"- pivot_highs_recent / pivot_lows_recent (bars_ago), support_is_fallback / resistance_is_fallback (true = fallback min/max, bukan pivot asli; jangan dijadikan level kuat).\n"
+        f"- level_candidates: kandidat SL/TP beserta R:R dari harga pasar yang sudah dihitung kode; prioritaskan memilih level dari sini dan jangan menghitung ulang secara bebas.\n"
+        f"- market_context.btc: bias BTC pada HTF/LTF yang sama; jika setup altcoin melawan bias BTC yang kuat, turunkan confidence.\n"
+        f"- market_ticker.open_interest_usdt, oi_to_volume_ratio, funding_rate_pct, funding_extreme: normalisasi OI & status funding.\n"
+        f"Instruksi Evaluasi Berurutan: Isi terlebih dahulu htf_analysis, ltf_trigger_analysis, dan checklist secara objektif "
+        f"berdasarkan aturan strategi, baru kemudian tentukan market_regime, decision, level harga, dan confidence. "
+        f"Nilai confidence (0-100) murni berdasarkan kualitas konfluensi (80-95: A-Grade lengkap, 70-79: B-Grade struktur utama & R:R terpenuhi, <70: lemah/berkonflik -> NO_TRADE).\n"
         f"Kembalikan HANYA JSON valid sesuai schema ini:\n{schema_json_str}\n\n"
         f"MARKET SNAPSHOT:\n{json.dumps(snapshot, ensure_ascii=False)}"
     )
@@ -220,35 +284,77 @@ async def analyze_market_snapshot(
         own_client = True
 
     try:
-        payload_schema = {**base_payload, "response_format": _build_response_format_schema()}
-        resp = await client.post(base_url, headers=headers, json=payload_schema)
+        async def _call_llm(messages_payload: list[dict[str, str]]) -> dict[str, Any]:
+            req_base = {**base_payload, "messages": messages_payload}
+            payload_schema = {**req_base, "response_format": _build_response_format_schema()}
+            resp = await client.post(base_url, headers=headers, json=payload_schema)
 
-        # Graceful fallback if provider rejects strict json_schema format
-        if resp.status_code in (400, 422):
-            log.debug(
-                "Provider %s returned %s for json_schema; falling back to json_object",
-                provider,
-                resp.status_code,
-            )
-            payload_obj = {**base_payload, "response_format": {"type": "json_object"}}
-            resp = await client.post(base_url, headers=headers, json=payload_obj)
+            # Graceful fallback if provider rejects strict json_schema format
             if resp.status_code in (400, 422):
-                # Second fallback: plain chat completions without response_format
-                resp = await client.post(base_url, headers=headers, json=base_payload)
+                log.warning(
+                    "Provider %s (%s) returned %s for strict json_schema; falling back to json_object",
+                    provider,
+                    model_id,
+                    resp.status_code,
+                )
+                payload_obj = {**req_base, "response_format": {"type": "json_object"}}
+                resp = await client.post(base_url, headers=headers, json=payload_obj)
+                if resp.status_code in (400, 422):
+                    log.warning(
+                        "Provider %s (%s) returned %s for json_object; falling back to plain chat completions",
+                        provider,
+                        model_id,
+                        resp.status_code,
+                    )
+                    resp = await client.post(base_url, headers=headers, json=req_base)
 
-        if resp.is_error:
-            raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
-        raw_response = resp.json()
-        if isinstance(raw_response, dict) and raw_response.get("error") and not raw_response.get("choices"):
-            raise RuntimeError(f"LLM API error: {raw_response['error']}")
+            if resp.is_error:
+                raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
+            raw_resp = resp.json()
+            if isinstance(raw_resp, dict) and raw_resp.get("error") and not raw_resp.get("choices"):
+                raise RuntimeError(f"LLM API error: {raw_resp['error']}")
+            return raw_resp
+
+        messages = list(base_payload["messages"])
+        raw_response = await _call_llm(messages)
         msg = (raw_response.get("choices") or [{}])[0].get("message") or {}
         content = msg.get("content") or ""
         if not str(content).strip():
             raise RuntimeError(
                 f"Model '{model_id}' mengembalikan content kosong/null. Coba pilih model lain yang mendukung output JSON."
             )
+
         json_text = _extract_json_content(str(content))
-        decision = AISetupDecision.model_validate_json(json_text)
+        try:
+            decision = AISetupDecision.model_validate_json(json_text)
+        except (ValidationError, ValueError) as parse_err:
+            log.warning(
+                "JSON/Schema validation failed for %s (%s); retrying once: %s",
+                model_id,
+                snapshot.get("symbol"),
+                parse_err,
+            )
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": str(content)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Output JSON sebelumnya gagal validasi schema: {str(parse_err)[:400]}. "
+                        f"Perbaiki dan kembalikan HANYA JSON valid sesuai schema tanpa teks lain."
+                    ),
+                },
+            ]
+            raw_response = await _call_llm(retry_messages)
+            msg = (raw_response.get("choices") or [{}])[0].get("message") or {}
+            content = msg.get("content") or ""
+            if not str(content).strip():
+                raise RuntimeError(
+                    f"Model '{model_id}' mengembalikan content kosong pada retry validasi JSON."
+                ) from parse_err
+            json_text = _extract_json_content(str(content))
+            decision = AISetupDecision.model_validate_json(json_text)
+
         # Ensure symbol and strategy_used are normalized cleanly
         decision.symbol = snapshot["symbol"]
         decision.strategy_used = strategy.strip().upper()

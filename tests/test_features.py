@@ -134,3 +134,80 @@ def test_get_top_pairs_filters_by_min_and_max_volume():
         client.get_top_pairs(top_n=3, min_quote_volume=5_000_000, max_quote_volume=0)
     )
     assert [p["symbol"] for p in all_pairs] == ["BTC_USDT", "ETH_USDT", "SUI_USDT"]
+
+
+def test_prefilter_drops_unclosed_forming_candle():
+    htf = _make_candles(80, start_price=100.0, step=0.5)
+    ltf = _make_candles(80, start_price=100.0, step=0.5)
+    # Last LTF candle starts at t_last; set now_ts = t_last + 180s (only 3m into a 15m candle -> unclosed)
+    t_last = ltf[-1]["time"]
+    ltf[-1]["volume"] = 50.0  # artificially tiny volume while forming
+    now_ts = t_last + 180
+    ticker = {"lastPrice": ltf[-1]["close"], "amount24": 25_000_000, "fundingRate": 0.0001, "holdVol": 100000}
+
+    ok, reason, snap = prefilter_and_build_snapshot(
+        symbol="ETH_USDT",
+        ticker=ticker,
+        htf_candles=htf,
+        ltf_candles=ltf,
+        min_atr_pct=0.1,
+        max_atr_pct=10.0,
+        htf_interval="Min15",
+        ltf_interval="Min15",
+        now_ts=now_ts,
+    )
+    assert ok is True
+    assert reason == "OK"
+    assert snap is not None
+    ltf_snap = snap["ltf_15m"]
+    assert ltf_snap["bars_count"] == 79
+    assert ltf_snap["recent_candles"][-1]["volume"] != 50.0
+    assert ltf_snap["forming_candle"]["is_closed"] is False
+    assert ltf_snap["forming_candle"]["volume"] == 50.0
+
+
+def test_snapshot_includes_structure_dss_cross_and_oi_normalization():
+    htf = _make_candles(80, start_price=100.0, step=0.4)
+    ltf = _make_candles(80, start_price=100.0, step=0.4)
+    # Create a clear prior pivot low at index 65 and sweep+reclaim it on the last closed bar
+    for k in range(62, 69):
+        ltf[k]["low"] = 120.0
+    ltf[65]["low"] = 115.0  # pivot low at index 65 (< 77)
+    ltf[-1]["low"] = 114.2  # sweep below 115.0
+    ltf[-1]["close"] = 116.5  # reclaim above 115.0
+
+    ticker = {"lastPrice": 116.5, "amount24": 10_000_000, "fundingRate": -0.0006, "holdVol": 50_000}
+    contract = {"symbol": "SOL_USDT", "contractSize": 1.0}
+
+    ok, reason, snap = prefilter_and_build_snapshot(
+        symbol="SOL_USDT",
+        ticker=ticker,
+        htf_candles=htf,
+        ltf_candles=ltf,
+        min_atr_pct=0.1,
+        max_atr_pct=15.0,
+        contract=contract,
+    )
+    assert ok is True, reason
+    assert snap is not None
+    mt = snap["market_ticker"]
+    assert mt["funding_rate_pct"] == -0.06
+    assert mt["funding_extreme"] is True
+    assert mt["open_interest_usdt"] == round(50_000 * 1.0 * 116.5, 2)
+    assert mt["oi_to_volume_ratio"] > 0
+
+    ltf_snap = snap["ltf_15m"]
+    assert len(ltf_snap["compact_candles_15"]) == 15
+    assert "prev_dss_signal" in ltf_snap
+    assert isinstance(ltf_snap["dss_cross_up"], bool)
+    assert isinstance(ltf_snap["dss_cross_down"], bool)
+    assert "ema21_slope_pct" in ltf_snap
+    assert ltf_snap["prior_swing_low"] == 115.0
+    assert ltf_snap["swept_prior_low"] is True
+    assert ltf_snap["structure_bias"] in ("HH_HL", "LH_LL", "MIXED_RANGE", "INSUFFICIENT")
+
+    lc = snap["level_candidates"]
+    assert lc["reference_price"] == 116.5
+    assert "swing_05atr" in lc["long"]["sl_candidates"]
+    assert "htf_res" in lc["long"]["tp_candidates"]
+    assert "rr_from_market_vs_swing_05atr" in lc["short"]

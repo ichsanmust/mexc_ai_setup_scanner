@@ -34,13 +34,27 @@ def normalize_strategy_code(raw: str) -> str:
     return cleaned[:64]
 
 
+class SetupChecklist(BaseModel):
+    """Structured confluence checklist evaluated before final trade decision."""
+
+    htf_trend_ok: bool = False
+    pullback_or_level_ok: bool = False
+    trigger_candle_ok: bool = False
+    volume_ok: bool = False
+    momentum_ok: bool = False
+    rr_ok: bool = False
+
+
 class AISetupDecision(BaseModel):
     """Strict structured JSON schema expected from the LLM decision engine."""
 
     symbol: str
     strategy_used: str = Field(..., min_length=1, max_length=64)
-    decision: DecisionType
+    htf_analysis: str = ""
+    ltf_trigger_analysis: str = ""
+    checklist: Optional[SetupChecklist] = None
     market_regime: RegimeType
+    decision: DecisionType
     entry_type: EntryType
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None

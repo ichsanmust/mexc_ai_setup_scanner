@@ -907,6 +907,15 @@ def test_analytics_date_range_filter(api_client, db_session):
     assert all_time["total_setups"] == 2
     assert all_time["overall_win_rate_pct"] == 50.0
 
+    cal_res = api_client.get("/api/analytics/calibration")
+    assert cal_res.status_code == 200
+    cal = cal_res.json()
+    assert cal["total_setups"] == 2
+    assert len(cal["confidence_buckets"]) == 6
+    assert any(b["decided"] >= 1 for b in cal["confidence_buckets"])
+    assert len(cal["by_model"]) >= 1
+    assert len(cal["by_prompt_version"]) >= 1
+
     # /api/setups also accepts start_date & end_date range filters
     setups_this_mo = api_client.get(
         f"/api/setups?start_date={month_start_str}&end_date={today_str}&tz_offset=0"
@@ -915,6 +924,38 @@ def test_analytics_date_range_filter(api_client, db_session):
     assert setups_this_mo["items"][0]["symbol"] == "THIS_MO_USDT"
     setups_all = api_client.get("/api/setups").json()
     assert setups_all["total"] == 2
+
+
+def test_sync_builtin_prompts_preserves_custom_unless_forced(api_client, db_session):
+    from app.models import Strategy
+
+    db, _, _ = db_session
+    tp = db.query(Strategy).filter(Strategy.name == "TREND_PULLBACK").first()
+    bm = db.query(Strategy).filter(Strategy.name == "BREAKOUT_MOMENTUM").first()
+    assert tp is not None and bm is not None
+
+    # Simulate legacy prompt on TREND_PULLBACK and user-customized prompt on BREAKOUT_MOMENTUM
+    tp.prompt_text = "Aturan lama ... confidence objektif Anda di bawah ambang Risk Guard."
+    bm.prompt_text = "CUSTOM USER PROMPT JANGAN TIMPA"
+    db.commit()
+
+    res = api_client.post("/api/strategies/sync-prompts")
+    assert res.status_code == 200
+    body = res.json()
+    assert "TREND_PULLBACK" in body["updated"]
+    assert "BREAKOUT_MOMENTUM" in body["skipped"]
+
+    db.refresh(tp)
+    db.refresh(bm)
+    assert "ambang Risk Guard" not in tp.prompt_text
+    assert bm.prompt_text == "CUSTOM USER PROMPT JANGAN TIMPA"
+
+    # With force=true, even customized prompt is synced
+    res_force = api_client.post("/api/strategies/sync-prompts?force=true")
+    assert res_force.status_code == 200
+    assert "BREAKOUT_MOMENTUM" in res_force.json()["updated"]
+    db.refresh(bm)
+    assert bm.prompt_text != "CUSTOM USER PROMPT JANGAN TIMPA"
 
 
 def test_scan_runs_filters_by_run_id_status_and_date_range(api_client, db_session):
