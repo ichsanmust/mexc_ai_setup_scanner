@@ -2784,7 +2784,7 @@ function renderStrategySettingsUI(activeList = null) {
         if (act === "toggle") {
           const updated = await apiRequest(`/api/strategies/${id}/toggle`, { method: "POST" });
           showToast(`${updated.name}: ${updated.is_active ? "AKTIF" : "NONAKTIF"}`);
-          await Promise.all([loadAIModalData(false), loadAnalytics()]);
+          await Promise.all([loadAIModalData(false), loadAnalytics(), loadBtcMarketMover()]);
         } else if (act === "edit" && target) {
           openStrategyForm(target);
         } else if (act === "delete" && target) {
@@ -2798,7 +2798,7 @@ function renderStrategySettingsUI(activeList = null) {
             onConfirm: async () => {
               await apiRequest(`/api/strategies/${id}`, { method: "DELETE" });
               showToast(`Strategi ${target.name} dihapus.`);
-              await Promise.all([loadAIModalData(false), loadAnalytics()]);
+              await Promise.all([loadAIModalData(false), loadAnalytics(), loadBtcMarketMover()]);
             },
           });
         }
@@ -3324,7 +3324,7 @@ async function saveScannerSettings() {
       body: JSON.stringify(payload),
     });
     showToast(`Tersimpan: ${saved.scan_mode} • Top ${saved.top_n_pairs} • ${saved.mexc_base_url}`);
-    await Promise.all([loadAIModalData(false), loadHealthAndStatus(), loadAnalytics()]);
+    await Promise.all([loadStrategies(), loadAIModalData(false), loadHealthAndStatus(), loadAnalytics(), loadBtcMarketMover()]);
   } catch (err) {
     showToast(err.message, true);
   }
@@ -4022,11 +4022,16 @@ function wireEvents() {
     document.getElementById("confirm-scan-modal")?.classList.add("hidden");
   }
 
-  function openConfirmRunScanModal() {
+  async function openConfirmRunScanModal() {
     const modal = document.getElementById("confirm-scan-modal");
     if (!modal) {
       executeRunScan();
       return;
+    }
+    try {
+      await Promise.all([loadStrategies(), loadBtcMarketMover()]);
+    } catch (_) {
+      // Fallback to currently cached state if refresh fails
     }
     const llmLabel = document.getElementById("active-llm-label")?.textContent || "-";
     const activeStrats = (state.strategies || []).filter((s) => s.is_active);
@@ -4296,6 +4301,7 @@ function switchMainView(viewName, updateHash = true) {
     loadScanRuns();
   } else if (target === "scanner") {
     loadStrategies();
+    loadBtcMarketMover();
   }
 
   requestAnimationFrame(() => {
