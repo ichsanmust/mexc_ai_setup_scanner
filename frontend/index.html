@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261124b" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261124c" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -446,6 +446,13 @@
         <div id="setup-detail-body" class="detail-body hidden">
           <div class="levels-strip">
             <div class="level-box">
+              <span>Pair (MEXC)</span>
+              <div class="level-value-row">
+                <strong id="d-pair-mexc">-</strong>
+                <button type="button" class="copy-btn" data-copy-field="symbol_mexc" title="Copy Pair MEXC (tanpa underscore)">Copy</button>
+              </div>
+            </div>
+            <div class="level-box">
               <span>Entry (<em id="d-entry-type">-</em>)</span>
               <div class="level-value-row">
                 <strong id="d-entry">-</strong>
@@ -469,6 +476,9 @@
             <div class="level-box">
               <span>R:R / Conf</span>
               <strong id="d-rr-conf">-</strong>
+            </div>
+            <div class="level-box level-quick-copy">
+              <button type="button" id="btn-open-quick-copy" class="btn btn-secondary btn-sm" title="Buka popup ringkas Pair, Entry, TP, dan SL untuk di-copy">Popup Copy</button>
             </div>
           </div>
 
@@ -1171,7 +1181,59 @@
     </div>
   </div>
 
+  <div id="quick-copy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="quick-copy-title">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h2 id="quick-copy-title">Quick Copy Data Setup</h2>
+        <button type="button" id="btn-close-quick-copy" class="btn-icon" title="Tutup">&times;</button>
+      </div>
+      <div class="modal-body edit-status-form">
+        <div class="quick-copy-list">
+          <div class="quick-copy-row">
+            <div>
+              <span class="subtitle-sm">Pair (MEXC)</span>
+              <div><strong id="qc-pair">-</strong> <span id="qc-dir" class="badge badge-neutral">-</span></div>
+            </div>
+            <button type="button" class="copy-btn" data-copy-field="symbol_mexc">Copy</button>
+          </div>
+          <div class="quick-copy-row">
+            <div>
+              <span class="subtitle-sm">Entry (<em id="qc-entry-type">-</em>)</span>
+              <div><strong id="qc-entry">-</strong></div>
+            </div>
+            <button type="button" class="copy-btn" data-copy-field="entry_price">Copy</button>
+          </div>
+          <div class="quick-copy-row">
+            <div>
+              <span class="subtitle-sm">Take Profit (TP)</span>
+              <div><strong id="qc-tp" class="text-green">-</strong></div>
+            </div>
+            <button type="button" class="copy-btn" data-copy-field="take_profit">Copy</button>
+          </div>
+          <div class="quick-copy-row">
+            <div>
+              <span class="subtitle-sm">Stop Loss (SL)</span>
+              <div><strong id="qc-sl" class="text-red">-</strong></div>
+            </div>
+            <button type="button" class="copy-btn" data-copy-field="stop_loss">Copy</button>
+          </div>
+          <div id="qc-bep-row" class="quick-copy-row hidden">
+            <div>
+              <span class="subtitle-sm">SL-BEP</span>
+              <div><strong id="qc-bep" class="text-bep">-</strong></div>
+            </div>
+            <button type="button" class="copy-btn" data-copy-field="sl_bep_price">Copy</button>
+          </div>
+        </div>
+        <div class="edit-status-actions">
+          <button type="button" id="btn-copy-all-setup" class="btn btn-primary btn-sm">Copy Semua</button>
+          <button type="button" id="btn-cancel-quick-copy" class="btn btn-secondary btn-sm">Tutup</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261124j"></script>
+  <script src="/static/app.js?v=20261124k"></script>
 </body>
 </html>

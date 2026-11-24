@@ -2295,7 +2295,10 @@ function selectSetup(setup) {
   });
 
   const effEntry = setup.manual_entry_price ?? setup.entry_price;
+  const pairMexc = String(setup.symbol || "").replace(/_/g, "");
   document.getElementById("setup-detail-body").classList.remove("hidden");
+  const dPairMexc = document.getElementById("d-pair-mexc");
+  if (dPairMexc) dPairMexc.textContent = pairMexc || "-";
   document.getElementById("d-entry-type").textContent = setup.manual_entry_price ? "MANUAL" : setup.entry_type;
   document.getElementById("d-entry").textContent = fmtPrice(effEntry);
   document.getElementById("d-sl").textContent = setup.sl_bep_price
@@ -3537,39 +3540,103 @@ function wireEvents() {
   bindGroupedNumberInput("cfg-min-vol", "cfg-min-vol-hint", false);
   bindGroupedNumberInput("cfg-max-vol", "cfg-max-vol-hint", true);
 
-  document.querySelectorAll(".copy-btn[data-copy-field]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!state.selectedSetup) return;
-      const field = btn.dataset.copyField;
-      const rawVal =
-        field === "entry_price"
-          ? (state.selectedSetup.manual_entry_price ?? state.selectedSetup.entry_price)
-          : state.selectedSetup[field];
-      if (rawVal === null || rawVal === undefined) return;
-      const text = String(rawVal);
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-        }
+  async function copyTextWithFeedback(text, btn = null) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      if (btn) {
         const prev = btn.textContent;
         btn.textContent = "Copied!";
         btn.classList.add("copied");
-        showToast(`Disalin: ${text}`);
         setTimeout(() => {
           btn.textContent = prev;
           btn.classList.remove("copied");
         }, 1200);
-      } catch (err) {
-        showToast(`Gagal copy: ${err.message}`, true);
       }
+      showToast(`Disalin: ${text}`);
+    } catch (err) {
+      showToast(`Gagal copy: ${err.message}`, true);
+    }
+  }
+
+  document.querySelectorAll(".copy-btn[data-copy-field]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.selectedSetup) return;
+      const field = btn.dataset.copyField;
+      let rawVal;
+      if (field === "symbol_mexc") {
+        rawVal = String(state.selectedSetup.symbol || "").replace(/_/g, "");
+      } else if (field === "entry_price") {
+        rawVal = state.selectedSetup.manual_entry_price ?? state.selectedSetup.entry_price;
+      } else {
+        rawVal = state.selectedSetup[field];
+      }
+      if (rawVal === null || rawVal === undefined || rawVal === "") return;
+      await copyTextWithFeedback(String(rawVal), btn);
     });
+  });
+
+  function closeQuickCopyModal() {
+    document.getElementById("quick-copy-modal")?.classList.add("hidden");
+  }
+
+  function openQuickCopyModal() {
+    const s = state.selectedSetup;
+    if (!s) return;
+    const modal = document.getElementById("quick-copy-modal");
+    if (!modal) return;
+    const pairMexc = String(s.symbol || "").replace(/_/g, "");
+    const effEntry = s.manual_entry_price ?? s.entry_price;
+    const dirEl = document.getElementById("qc-dir");
+    document.getElementById("qc-pair").textContent = pairMexc;
+    if (dirEl) {
+      dirEl.textContent = s.decision;
+      dirEl.className = `badge ${s.decision === "LONG" ? "badge-long" : "badge-short"}`;
+    }
+    document.getElementById("qc-entry-type").textContent = s.manual_entry_price ? "MANUAL" : s.entry_type;
+    document.getElementById("qc-entry").textContent = fmtPrice(effEntry);
+    document.getElementById("qc-tp").textContent = fmtPrice(s.take_profit);
+    document.getElementById("qc-sl").textContent = fmtPrice(s.stop_loss);
+    const bepRow = document.getElementById("qc-bep-row");
+    const bepVal = document.getElementById("qc-bep");
+    if (bepRow && bepVal) {
+      if (s.sl_bep_price) {
+        bepVal.textContent = fmtPrice(s.sl_bep_price);
+        bepRow.classList.remove("hidden");
+      } else {
+        bepRow.classList.add("hidden");
+      }
+    }
+    modal.classList.remove("hidden");
+  }
+
+  document.getElementById("btn-open-quick-copy")?.addEventListener("click", openQuickCopyModal);
+  document.getElementById("btn-close-quick-copy")?.addEventListener("click", closeQuickCopyModal);
+  document.getElementById("btn-cancel-quick-copy")?.addEventListener("click", closeQuickCopyModal);
+  document.getElementById("quick-copy-modal")?.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "quick-copy-modal") closeQuickCopyModal();
+  });
+  document.getElementById("btn-copy-all-setup")?.addEventListener("click", async (e) => {
+    const s = state.selectedSetup;
+    if (!s) return;
+    const pairMexc = String(s.symbol || "").replace(/_/g, "");
+    const effEntry = s.manual_entry_price ?? s.entry_price;
+    const lines = [
+      `Pair: ${pairMexc} (${s.decision})`,
+      `Entry: ${effEntry}`,
+      `TP: ${s.take_profit}`,
+      `SL: ${s.stop_loss}`,
+    ];
+    if (s.sl_bep_price) lines.push(`SL-BEP: ${s.sl_bep_price}`);
+    await copyTextWithFeedback(lines.join("\n"), e.currentTarget);
   });
 
   document.getElementById("btn-close-eval-modal").addEventListener("click", () => {
