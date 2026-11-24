@@ -3790,9 +3790,8 @@ function wireEvents() {
     btnToggleBtc.addEventListener("click", () => {
       const body = document.getElementById("btc-mover-body");
       if (!body) return;
-      const hidden = body.classList.toggle("hidden");
-      btnToggleBtc.textContent = hidden ? "Tampilkan" : "Sembunyikan";
-      btnToggleBtc.setAttribute("aria-expanded", String(!hidden));
+      const nextCollapsed = !body.classList.contains("hidden");
+      setBtcMoverCollapsed(nextCollapsed, true);
     });
   }
 
@@ -4216,12 +4215,7 @@ async function triggerBtcMarketMoverScan() {
     hideErrorBanner();
     const res = await apiRequest("/api/market-mover/btc/scan", { method: "POST" });
     renderBtcMarketMover(res.report);
-    const body = document.getElementById("btc-mover-body");
-    if (body && body.classList.contains("hidden")) {
-      body.classList.remove("hidden");
-      const toggleBtn = document.getElementById("btn-toggle-btc-mover");
-      if (toggleBtn) toggleBtn.textContent = "Sembunyikan";
-    }
+    setBtcMoverCollapsed(false, true);
     showToast("Scan BTC_USDT selesai — kesimpulan & sugesti diperbarui.");
   } catch (err) {
     showErrorBanner("Gagal Scan BTC_USDT", err.message);
@@ -4253,7 +4247,26 @@ async function applyBtcMarketMoverSuggestion() {
   }
 }
 
+const BTC_MOVER_COLLAPSED_KEY = "mexc_btc_mover_collapsed";
+
+function setBtcMoverCollapsed(collapsed, persist = true) {
+  const body = document.getElementById("btc-mover-body");
+  const toggleBtn = document.getElementById("btn-toggle-btc-mover");
+  if (body) {
+    body.classList.toggle("hidden", Boolean(collapsed));
+  }
+  if (toggleBtn) {
+    toggleBtn.textContent = collapsed ? "Tampilkan" : "Sembunyikan";
+    toggleBtn.setAttribute("aria-expanded", String(!collapsed));
+  }
+  if (persist) {
+    localStorage.setItem(BTC_MOVER_COLLAPSED_KEY, collapsed ? "1" : "0");
+  }
+}
+
 async function bootstrap() {
+  const savedBtcCollapsed = localStorage.getItem(BTC_MOVER_COLLAPSED_KEY) === "1";
+  setBtcMoverCollapsed(savedBtcCollapsed, false);
   const savedLiveMs = localStorage.getItem("mexc_live_chart_ms");
   if (savedLiveMs !== null) {
     const sel = document.getElementById("live-chart-interval");
