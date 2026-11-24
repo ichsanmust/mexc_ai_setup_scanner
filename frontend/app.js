@@ -2482,6 +2482,7 @@ function syncEditStatusFields(setup) {
 
   const showEntry =
     statusVal === "MANUAL_TAKEN" ||
+    statusVal === "ENTRY_HIT" ||
     statusVal === "CLOSED_MANUAL_TP" ||
     statusVal === "CLOSED_MANUAL_CL";
   const showRiskLevels =
@@ -3661,7 +3662,10 @@ function wireEvents() {
     const canSendRisk = statusVal === "MANUAL_TAKEN" || statusVal === "ENTRY_HIT" || statusVal === "EXTENDED" || statusVal === "OPEN";
     const ok = await updateManualStatus(statusVal, {
       manual_entry_price:
-        statusVal === "MANUAL_TAKEN" || statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL"
+        statusVal === "MANUAL_TAKEN" ||
+        statusVal === "ENTRY_HIT" ||
+        statusVal === "CLOSED_MANUAL_TP" ||
+        statusVal === "CLOSED_MANUAL_CL"
           ? entryParsed
           : null,
       stop_loss: canSendRisk ? slParsed : null,

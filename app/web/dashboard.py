@@ -956,9 +956,11 @@ def update_setup_manual_status(
         row.entry_hit_at = row.entry_hit_at or now
         row.resolved_price = None
         row.resolved_at = None
+        if body.manual_entry_price is not None:
+            row.manual_entry_price = Decimal(f"{body.manual_entry_price:.8f}")
         ext_info = _extend_if_expired()
         ext_txt = f" (+{ext_info['extend_hours']}j expiry strategi)" if ext_info else ""
-        _append_hist("MANUAL_ENTRY_HIT", float(row.entry_price), f"Ditandai ENTRY_HIT manual{ext_txt}", ext_info)
+        _append_hist("MANUAL_ENTRY_HIT", eff_entry, f"Ditandai ENTRY_HIT manual (Entry {eff_entry}){ext_txt}", ext_info)
     elif body.status == "EXTENDED":
         ext_h = body.extend_hours if body.extend_hours is not None else strat_exp_hours
         old_exp = row.expires_at

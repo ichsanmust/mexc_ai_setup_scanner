@@ -58,7 +58,8 @@ flowchart TD
     J --> K["Set Leverage & Submit Order ke MEXC Private API"]
     K --> L{"Order Sukses?"}
     L -- "Gagal" --> M["Catat Error & Tampilkan Pesan MEXC"]
-    L -- "Sukses" --> N["Simpan mexc_order_id + Update Status ke MANUAL_TAKEN"]
+    L -- "LIMIT Pending" --> N["Simpan order_executions (LIMIT_PENDING) • Status Setup tetap OPEN"]
+    L -- "MARKET / Langsung Filled" --> O["Simpan avg_fill_price ke order_executions (FILLED) • Sync ke manual_entry_price (ME) & status ENTRY_HIT"]
 ```
 
 ### Aturan Guard per Tipe Order
@@ -98,17 +99,31 @@ Semua harga (`entry_price`, `stop_loss`, `take_profit`) wajib dibulatkan ke keli
 ## 5. Rancangan Perubahan Kode & Database
 
 ### A. Database (`app/models.py` & `init_database.sql`)
-Tambahkan tabel baru **`order_executions`** (relasi ke `trade_setups.id`) untuk audit dan anti-double-order:
+**Status `trade_setups.status` tidak perlu diubah/ditambah** (tetap memakai 10 status yang sudah ada: `OPEN`, `ENTRY_HIT`, `EXTENDED`, `MANUAL_TAKEN`, `HIT_TP`, `HIT_SL`, dll).
+
+Tambahkan tabel baru **`order_executions`** (relasi ke `trade_setups.id`) untuk menyimpan status order MEXC secara terpisah + harga eksekusi aktual:
 - `id`, `setup_id` (FK ke `trade_setups.id`)
 - `symbol`, `side` (`OPEN_LONG` / `OPEN_SHORT`)
 - `order_type` (`LIMIT` / `MARKET`)
 - `open_type` (`ISOLATED` / `CROSS`)
 - `leverage`, `vol`, `margin_usdt`, `risk_usdt`
-- `entry_price`, `stop_loss`, `take_profit`
+- `entry_price` *(harga rencana)*, `avg_fill_price` *(harga aktual terisi dari MEXC `dealAvgPrice`)*, `stop_loss`, `take_profit`
+- `avg_close_price` *(harga aktual saat posisi ditutup di MEXC)*, `realized_pnl_usdt`, `fee_usdt`, `close_reason` (`TP_HIT`, `SL_HIT`, `MANUAL_CLOSE`, `LIQUIDATION`)
 - `mexc_order_id` (String, indexed)
-- `status` (`SUBMITTED`, `FILLED`, `PARTIAL`, `CANCELED`, `FAILED`)
-- `error_message`, `raw_response` (JSON)
+- `status` (`LIMIT_PENDING`, `FILLED`, `PARTIAL`, `CANCELED`, `CLOSED`, `FAILED`)
+- `filled_at`, `closed_at`, `error_message`, `raw_response` (JSON)
 - `created_at`, `updated_at`
+
+#### Sinkronisasi Harga Aktual MEXC ke Setup (`ME / Entry Aktual`)
+- **Saat `LIMIT` dikirim & masih pending (`LIMIT_PENDING`):** status `trade_setups` tetap `OPEN` (tidak dipaksa berubah), di UI muncul badge link order MEXC (`MEXC: LIMIT PENDING`).
+- **Saat order `LIMIT` atau `MARKET` terisi (`FILLED`) di MEXC:**
+  - Ambil `dealAvgPrice` / harga eksekusi aktual dari MEXC dan simpan ke `order_executions.avg_fill_price`.
+  - Karena harga fill di MEXC sering sedikit berbeda dari `entry_price` AI, simpan juga harga aktual tersebut ke `trade_setups.manual_entry_price` (atau field `actual_entry_price`), lalu jika status setup masih `OPEN`/`EXTENDED`, ubah ke **`ENTRY_HIT`** (catat event di `status_history`: *"MEXC Order Filled @ {avg_fill_price}"*).
+  - Di tabel, detail setup, dan `Kotak Setup`, tampilkan harga aktual tersebut seperti label **`ME` (Entry Aktual)** pada `MANUAL_TAKEN` sehingga terlihat jelas perbandingan antara **Entry Rencana (AI)** dan **Entry Aktual (MEXC)**.
+- **Saat posisi ditutup di MEXC (`CLOSED`):**
+  - Simpan `avg_close_price`, `realized_pnl_usdt`, `fee_usdt`, dan `close_reason` di `order_executions` (`status = CLOSED`).
+  - Otomatis sinkronkan ke `trade_setups`: isi `resolved_price = avg_close_price`, `resolved_at = closed_at`, dan ubah status setup secara otomatis (`HIT_TP` jika `TP_HIT`, `HIT_SL` jika `SL_HIT`, atau `CLOSED_MANUAL_TP` / `CLOSED_MANUAL_CL` jika ditutup manual di MEXC).
+  - Di UI detail setup, tampilkan **Perbandingan Rencana App vs Hasil Aktual MEXC** (Entry AI vs Entry Aktual `ME`, TP/SL Rencana vs Harga Close Aktual, serta Realized PnL & Fee).
 
 ### B. Backend Private Client (`app/scanner/mexc_private.py`)
 Modul baru khusus endpoint terautentikasi MEXC Futures:
@@ -122,14 +137,17 @@ Modul baru khusus endpoint terautentikasi MEXC Futures:
 ### C. Backend Endpoints (`app/web/dashboard.py` & `app/schemas.py`)
 - `GET /api/mexc/account` → status koneksi API Key & saldo USDT tersedia
 - `POST /api/setups/{setup_id}/order/preview` → hitung `vol`, estimasi margin, estimasi rugi SL, estimasi profit TP, dan cek slippage
-- `POST /api/setups/{setup_id}/order` → validasi anti-double-order, eksekusi ke MEXC, simpan ke `order_executions`, lalu ubah status setup menjadi `MANUAL_TAKEN` (menyimpan `manual_entry_price`, `manual_sl`, `manual_tp` sesuai yang terkirim)
-- `POST /api/setups/{setup_id}/order/cancel` → batalkan order `LIMIT` yang masih pending di MEXC
+- `POST /api/setups/{setup_id}/order` → validasi anti-double-order, eksekusi ke MEXC, simpan ke `order_executions`:
+  - Jika `LIMIT` masih pending → `order_executions.status = LIMIT_PENDING`, `trade_setups.status` tetap `OPEN`.
+  - Jika `MARKET` langsung terisi (`FILLED`) → simpan `avg_fill_price` ke `order_executions` & `trade_setups.manual_entry_price` (agar tampil sebagai **`ME` / Entry Aktual**), lalu set `trade_setups.status = ENTRY_HIT`.
+- `POST /api/setups/{setup_id}/order/cancel` → batalkan order `LIMIT_PENDING` di MEXC
 
 ### D. Frontend (`frontend/index.html`, `frontend/app.js`, `frontend/styles.css`)
-- **Tombol Aksi di Tabel & Detail Modal Setup:**
+- **Tombol Aksi & Badge Status Order MEXC di Tabel & Detail Modal Setup:**
   - `OPEN` → tampilkan tombol **`Limit Order`**
   - `ENTRY_HIT` → tampilkan tombol **`Market Order`**
-  - Jika sudah ada `order_executions` aktif (`SUBMITTED`/`FILLED`) → tampilkan badge **`LIVE MEXC`** (dan tombol **`Cancel Order`** bila `LIMIT` masih `SUBMITTED`).
+  - Jika ada `order_executions` terkait → tampilkan badge status MEXC terhubung (`MEXC: LIMIT PENDING`, `MEXC: FILLED`, `MEXC: MARKET FILLED`, atau `MEXC: CLOSED`) + tombol **`Cancel Order`** bila masih `LIMIT_PENDING`.
+  - Saat order sudah `FILLED`, tampilkan harga fill aktual MEXC sebagai **`ME` (Entry Aktual)** tepat di samping harga Entry rencana AI (seperti tampilan `MANUAL_TAKEN`).
 - **Modal Konfirmasi Order MEXC:**
   - Pilih mode sizing (**Risk USDT** atau **Margin USDT**), **Leverage**, **Isolated / Cross**.
   - Tampilkan preview hasil hitungan backend: jumlah kontrak (`vol`), estimasi Margin terpakai, potensi rugi di SL, potensi profit di TP, R:R aktual, dan peringatan jika slippage melebihi batas.
@@ -143,4 +161,4 @@ Modul baru khusus endpoint terautentikasi MEXC Futures:
 - [ ] **Fase 2 (Sizing & Preview):** Implementasikan `get_contract_detail` + kalkulator `vol` & `priceUnit` + endpoint `POST /api/setups/{id}/order/preview`.
 - [ ] **Fase 3 (Eksekusi & Audit):** Tambah tabel `order_executions`, endpoint `POST /api/setups/{id}/order` & `cancel`, serta guard anti-double-order + slippage guard.
 - [ ] **Fase 4 (UI Modal & Tombol):** Tambah tombol `Limit Order` / `Market Order` sesuai status setup dan modal konfirmasi dengan preview sizing.
-- [ ] **Fase 5 (Sinkronisasi Tracker - Opsional):** Tracker periodik mengecek status order `SUBMITTED` di MEXC untuk memantau apakah Limit Order sudah `FILLED` atau `CANCELED`.
+- [ ] **Fase 5 (Sinkronisasi Tracker, Auto-Close & Perbandingan Aktual):** Tracker periodik mengecek status order/posisi di MEXC; saat terisi (`FILLED`), simpan `avg_fill_price` ke `manual_entry_price` (tampil sebagai **`ME`**) dan ubah `OPEN` → `ENTRY_HIT`; saat tertutup di MEXC, simpan `avg_close_price` & `realized_pnl_usdt` lalu sinkronkan otomatis `resolved_price` & status setup (`HIT_TP`/`HIT_SL`/`CLOSED_MANUAL_*`) lengkap dengan perbandingan rencana vs hasil aktual MEXC.
