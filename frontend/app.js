@@ -278,14 +278,6 @@ function syncScanButtonsState(isRunning) {
       ? "Scan sedang berjalan (hanya 1 proses scan aktif dalam satu waktu)"
       : "";
   }
-  const modalScanBtn = document.getElementById("btn-modal-run-scan");
-  if (modalScanBtn) {
-    modalScanBtn.disabled = running;
-    modalScanBtn.textContent = running ? "Scan Sedang Berjalan..." : "Scan Sekarang (Manual)";
-    modalScanBtn.title = running
-      ? "Scan sedang berjalan — tunggu hingga selesai sebelum menjalankan scan baru"
-      : "";
-  }
   const modalInfo = document.getElementById("modal-scan-running-info");
   if (modalInfo) {
     modalInfo.classList.toggle("hidden", !running);
@@ -3751,10 +3743,6 @@ function wireEvents() {
   document.getElementById("btn-save-scanner-settings").addEventListener("click", saveScannerSettings);
   document.querySelectorAll('input[name="scan_mode"]').forEach((radio) => {
     radio.addEventListener("change", syncScanIntervalState);
-  });
-  document.getElementById("btn-modal-run-scan").addEventListener("click", () => {
-    switchMainView("scanner");
-    document.getElementById("btn-run-scan").click();
   });
   document.getElementById("btn-toggle-add-strategy").addEventListener("click", () => {
     const card = document.getElementById("strategy-form-card");
