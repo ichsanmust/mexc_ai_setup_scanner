@@ -160,7 +160,7 @@ Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomati
 | `EXTENDED` | `AKTIF` / `EXTENDED` | ✅ Ya | `Setup Aktif` | Perpanjangan manual batas `expires_at` mengikuti snapshot strategi saat scan run (atau jam kustom); tetap dipantau Tracker dan tidak tertimpa balik ke `ENTRY_HIT`. |
 | `HIT_TP` | `HIT_TP` | ❌ Final | **Win (Executed)** | Otomatis dari Tracker: harga menyentuh `Take Profit` terlebih dahulu setelah `Entry` tersentuh. |
 | `HIT_SL` | `HIT_SL` | ❌ Final | **Loss (Executed)** / `SL No Entry` | Hanya dihitung **Loss** pada Win Rate jika sudah pernah Entry (`ENTRY_HIT`/`MANUAL_TAKEN`/`MARKET`); jika belum pernah Entry dicatat sebagai **`SL No Entry`**. |
-| `BEP` | `BEP` | ❌ Final | **Break-Even (0 Loss)** | Otomatis dari Tracker: harga menyentuh `sl_bep_price` setelah **Pindah SL ke BEP** (tidak dihitung Loss pada Win Rate). |
+| `BEP` | `BEP` | ❌ Final | **Break-Even (0 Loss)** | Otomatis dari Tracker: harga menyentuh `sl_bep_price` setelah **Pindah SL ke BEP**; langsung berhenti dipantau Tracker & tidak dihitung Loss/Win pada Win Rate. |
 | `EXPIRED` | `EXPIRED` | ❌ Final | `Expired` | Otomatis dari Tracker: melewati `expires_at` sebelum mengenai `TP` maupun `SL`. |
 | `MANUAL_TAKEN` | `AKTIF` / `TAKEN` | ✅ Ya | `Setup Aktif` & `Taken` | Ditandai manual oleh user sudah dieksekusi di MEXC (bisa isi `manual_entry_price`); tetap dipantau Tracker sampai `TP`/`SL`/`EXPIRED`. |
 | `MANUAL_SKIPPED` | `SKIPPED` | ❌ Final | `Skipped` | Ditandai manual (*Skip*) bahwa setup ini dilewati dan tidak dieksekusi. |
