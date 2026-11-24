@@ -297,6 +297,7 @@
           <span class="status-tabs-sep" aria-hidden="true"></span>
           <button class="tab" data-status="HIT_TP" title="Harga sudah menyentuh Take Profit lebih dulu (Win)">HIT_TP <span class="tab-count" data-count-for="HIT_TP">0</span></button>
           <button class="tab" data-status="HIT_SL" title="Harga sudah menyentuh Stop Loss lebih dulu (Loss)">HIT_SL <span class="tab-count" data-count-for="HIT_SL">0</span></button>
+          <button class="tab" data-status="BEP" title="Otomatis dari Tracker: harga menyentuh SL-BEP (Break-Even Point)">BEP <span class="tab-count" data-count-for="BEP">0</span></button>
           <button class="tab" data-status="EXPIRED" title="Setup melewati batas waktu Setup Expiry tanpa menyentuh TP/SL">EXPIRED <span class="tab-count" data-count-for="EXPIRED">0</span></button>
           <button class="tab" data-status="MANUAL_SKIPPED" title="Ditandai manual oleh Anda bahwa setup ini dilewati / tidak diambil">SKIPPED <span class="tab-count" data-count-for="MANUAL_SKIPPED">0</span></button>
           <button class="tab" data-status="CLOSED_MANUAL_TP" title="Posisi ditutup manual dengan Take Profit">CLOSED_TP <span class="tab-count" data-count-for="CLOSED_MANUAL_TP">0</span></button>
@@ -320,6 +321,7 @@
             <div class="legend-item"><span class="badge badge-extended">EXTENDED</span><span>Batas <i>expires_at</i> diperpanjang (+jam expiry strategi) &amp; tetap dipantau Tracker ke TP/SL.</span></div>
             <div class="legend-item"><span class="badge badge-hit-tp">HIT_TP</span><span>Harga menyentuh <b>Take Profit</b> terlebih dahulu sebelum SL (dihitung Win).</span></div>
             <div class="legend-item"><span class="badge badge-hit-sl">HIT_SL</span><span>Harga menyentuh <b>Stop Loss</b> terlebih dahulu (dihitung Loss).</span></div>
+            <div class="legend-item"><span class="badge badge-bep">BEP</span><span>Otomatis dari Tracker: harga menyentuh <b>SL-BEP</b> setelah SL dipindah ke Break-Even Point.</span></div>
             <div class="legend-item"><span class="badge badge-expired">EXPIRED</span><span>Melewati batas waktu <i>Setup Expiry</i> tanpa menyentuh TP maupun SL.</span></div>
             <div class="legend-item"><span class="badge badge-manual">MANUAL_TAKEN</span><span>Tab <b>TAKEN</b>: Order dieksekusi manual di MEXC (bisa isi harga entry) &amp; tetap dipantau otomatis.</span></div>
             <div class="legend-item"><span class="badge badge-neutral">MANUAL_SKIPPED</span><span>Tab <b>SKIPPED</b>: Anda menandai manual (<i>Skip</i>) bahwa setup ini tidak diambil.</span></div>
@@ -1075,6 +1077,7 @@
             <option value="ENTRY_HIT">ENTRY_HIT (Entry Tersentuh Pasar)</option>
             <option value="EXTENDED">EXTENDED (Perpanjang Expiry Strategi)</option>
             <option value="MANUAL_TAKEN">MANUAL_TAKEN (Diambil Manual)</option>
+            <option value="MOVE_SL_BEP">Pindah SL ke BEP (Tanpa Ubah Status Utama)</option>
             <option value="MANUAL_SKIPPED">MANUAL_SKIPPED (Dilewati / Skip)</option>
             <option value="CLOSED_MANUAL_TP">CLOSED_MANUAL_TP (Closed Position Manually TP)</option>
             <option value="CLOSED_MANUAL_CL">CLOSED_MANUAL_CL (Closed Position Manually CL)</option>
@@ -1084,6 +1087,11 @@
         <div id="edit-extend-hours-wrap" class="hidden">
           <label for="edit-extend-hours">Perpanjang Expiry (Jam — Default Ikut Strategi)</label>
           <input id="edit-extend-hours" type="number" min="1" max="720" placeholder="mis. 12" />
+        </div>
+        <div id="edit-sl-bep-wrap" class="hidden">
+          <label for="edit-sl-bep-price">Harga SL-BEP (Default: Entry Aktual / AI)</label>
+          <input id="edit-sl-bep-price" type="text" placeholder="mis. 1667.36" />
+          <p class="subtitle-sm" style="margin: 4px 0 0;">Nilai SL awal tidak diubah; status utama tetap dipertahankan &amp; dicatat ke history.</p>
         </div>
         <div id="edit-manual-entry-wrap">
           <label for="edit-manual-entry">Harga Entry Aktual (Opsional)</label>
@@ -1116,6 +1124,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261124b"></script>
+  <script src="/static/app.js?v=20261124e"></script>
 </body>
 </html>

@@ -299,7 +299,7 @@ async def test_check_open_setups_uses_min1_and_marks_short_entry_hit(db_session)
     db.refresh(setup_short)
 
     assert seen_calls and seen_calls[0][1] == "Min1"
-    assert stats == {"checked": 1, "entry_hit": 1, "hit_tp": 0, "hit_sl": 0, "expired": 0}
+    assert stats == {"checked": 1, "entry_hit": 1, "hit_tp": 0, "hit_sl": 0, "hit_bep": 0, "expired": 0}
     assert setup_short.status == "ENTRY_HIT"
     assert setup_short.entry_hit_at is not None
 
@@ -503,3 +503,49 @@ def test_tracker_coarse_candle_ignores_pre_creation_bar_and_defers_same_bar_limi
     assert st2 == "HIT_TP"
     assert resolved2 == 110.0
 
+
+
+def test_tracker_auto_hits_bep_after_sl_bep_at():
+    from datetime import datetime, timedelta, timezone
+
+    t_open = datetime(2026, 3, 1, 12, 0, 0)
+    t_bep = datetime(2026, 3, 1, 12, 20, 0)
+    setup = _make_custom_setup(
+        decision="LONG",
+        entry=100.0,
+        sl=95.0,
+        tp=110.0,
+        status="MANUAL_TAKEN",
+        created_at=t_open,
+    )
+    setup.manual_action_at = t_open
+    setup.sl_bep_price = Decimal("100.50000000")
+    setup.sl_bep_at = t_bep
+
+    ts_before = int(datetime(2026, 3, 1, 12, 10, 0, tzinfo=timezone.utc).timestamp())
+    ts_after = int(datetime(2026, 3, 1, 12, 25, 0, tzinfo=timezone.utc).timestamp())
+
+    # Candle before sl_bep_at dipping to 99.0 must NOT trigger BEP
+    st1, res1 = evaluate_setup_against_market(
+        setup,
+        last_price=103.0,
+        candles_since_open=[{"time": ts_before, "open": 100.0, "high": 104.0, "low": 99.0}],
+        now=t_bep + timedelta(minutes=1),
+        candle_interval="Min5",
+    )
+    assert st1 is None
+    assert res1 is None
+
+    # Candle at/after sl_bep_at dipping to 100.5 triggers final status BEP
+    st2, res2 = evaluate_setup_against_market(
+        setup,
+        last_price=100.4,
+        candles_since_open=[
+            {"time": ts_before, "open": 100.0, "high": 104.0, "low": 99.0},
+            {"time": ts_after, "open": 103.0, "high": 103.5, "low": 100.2},
+        ],
+        now=t_bep + timedelta(minutes=6),
+        candle_interval="Min5",
+    )
+    assert st2 == "BEP"
+    assert res2 == 100.5

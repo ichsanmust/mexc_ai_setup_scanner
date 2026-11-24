@@ -145,6 +145,8 @@ class TradeSetup(Base):
     missed_tp_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     manual_action_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     manual_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    sl_bep_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    sl_bep_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     manual_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

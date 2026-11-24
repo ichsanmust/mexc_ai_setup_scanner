@@ -1021,3 +1021,120 @@ def test_scan_runs_filters_by_run_id_status_and_date_range(api_client, db_sessio
 
 
 
+
+
+def test_move_sl_to_bep_preserves_status_and_initial_sl(api_client, db_session, monkeypatch):
+    from app.web import dashboard as dash_mod
+
+    db, _, _ = db_session
+    now = utcnow()
+    long_setup = TradeSetup(
+        symbol="ETH_USDT",
+        strategy_used="TREND_PULLBACK",
+        decision="LONG",
+        market_regime="TRENDING_UP",
+        entry_type="LIMIT",
+        entry_price=Decimal("3000.00000000"),
+        stop_loss=Decimal("2900.00000000"),
+        take_profit=Decimal("3250.00000000"),
+        risk_reward_ratio=Decimal("2.5000"),
+        confidence=84,
+        invalidation_reason="Break below 2900",
+        rationale="Uptrend pullback",
+        status="MANUAL_TAKEN",
+        manual_entry_price=Decimal("3010.00000000"),
+        manual_action_at=now,
+        expires_at=now + timedelta(hours=12),
+        features_snapshot={"symbol": "ETH_USDT"},
+        ai_payload={"decision": "LONG"},
+    )
+    short_setup = TradeSetup(
+        symbol="SOL_USDT",
+        strategy_used="TREND_PULLBACK",
+        decision="SHORT",
+        market_regime="TRENDING_DOWN",
+        entry_type="LIMIT",
+        entry_price=Decimal("200.00000000"),
+        stop_loss=Decimal("210.00000000"),
+        take_profit=Decimal("180.00000000"),
+        risk_reward_ratio=Decimal("2.0000"),
+        confidence=82,
+        invalidation_reason="Break above 210",
+        rationale="Downtrend pullback",
+        status="ENTRY_HIT",
+        entry_hit_at=now,
+        expires_at=now + timedelta(hours=12),
+        features_snapshot={"symbol": "SOL_USDT"},
+        ai_payload={"decision": "SHORT"},
+    )
+    db.add_all([long_setup, short_setup])
+    db.commit()
+    db.refresh(long_setup)
+    db.refresh(short_setup)
+
+    live_prices = {"ETH_USDT": 2990.0, "SOL_USDT": 202.0}
+
+    async def fake_fetch_live_price(symbol: str, db=None):
+        return live_prices.get(symbol)
+
+    monkeypatch.setattr(dash_mod, "_fetch_symbol_live_price", fake_fetch_live_price)
+
+    # LONG not yet in profit (2990 <= 3010) -> 400
+    bad_long = api_client.patch(
+        f"/api/setups/{long_setup.id}/status",
+        json={"status": "MOVE_SL_BEP"},
+    )
+    assert bad_long.status_code == 400
+
+    # SHORT not yet in profit (202 >= 200) -> 400
+    bad_short = api_client.patch(
+        f"/api/setups/{short_setup.id}/status",
+        json={"status": "MOVE_SL_BEP"},
+    )
+    assert bad_short.status_code == 400
+
+    # Move both into profit
+    live_prices["ETH_USDT"] = 3060.0
+    live_prices["SOL_USDT"] = 192.0
+
+    # LONG BEP below entry (3005 < 3010) -> 400
+    bad_bep_long = api_client.patch(
+        f"/api/setups/{long_setup.id}/status",
+        json={"status": "MOVE_SL_BEP", "sl_bep_price": 3005.0},
+    )
+    assert bad_bep_long.status_code == 400
+
+    # Default LONG BEP uses manual_entry_price (3010) and preserves status & initial stop_loss
+    res1 = api_client.patch(
+        f"/api/setups/{long_setup.id}/status",
+        json={"status": "MOVE_SL_BEP", "manual_notes": "Amankan BEP"},
+    )
+    assert res1.status_code == 200
+    body1 = res1.json()
+    assert body1["status"] == "MANUAL_TAKEN"
+    assert body1["stop_loss"] == 2900.0
+    assert body1["sl_bep_price"] == 3010.0
+    assert body1["sl_bep_at"] is not None
+    assert any(h.get("event") == "SL_MOVED_TO_BEP" and h.get("sl_bep_price") == 3010.0 for h in body1["status_history"])
+
+    # Custom LONG SL-BEP price (3015 < 3060)
+    res2 = api_client.patch(
+        f"/api/setups/{long_setup.id}/status",
+        json={"status": "MOVE_SL_BEP", "sl_bep_price": 3015.0},
+    )
+    assert res2.status_code == 200
+    body2 = res2.json()
+    assert body2["status"] == "MANUAL_TAKEN"
+    assert body2["stop_loss"] == 2900.0
+    assert body2["sl_bep_price"] == 3015.0
+
+    # Valid SHORT SL-BEP (198 between TP 180 and Entry 200, while live 192 < 198)
+    res_short = api_client.patch(
+        f"/api/setups/{short_setup.id}/status",
+        json={"status": "MOVE_SL_BEP", "sl_bep_price": 198.0},
+    )
+    assert res_short.status_code == 200
+    body_s = res_short.json()
+    assert body_s["status"] == "ENTRY_HIT"
+    assert body_s["stop_loss"] == 210.0
+    assert body_s["sl_bep_price"] == 198.0

@@ -2068,3 +2068,13 @@ code {
     grid-template-columns: 1fr;
   }
 }
+
+.badge-bep {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #7dd3fc;
+}
+.text-bep {
+  color: #0284c7;
+  font-weight: 600;
+}

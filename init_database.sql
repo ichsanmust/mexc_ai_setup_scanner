@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS `trade_setups` (
   `missed_tp_price` DECIMAL(20, 8) NULL,
   `manual_action_at` DATETIME NULL,
   `manual_entry_price` DECIMAL(20, 8) NULL,
+  `sl_bep_price` DECIMAL(20, 8) NULL,
+  `sl_bep_at` DATETIME NULL,
   `manual_notes` TEXT NULL,
   `resolved_price` DECIMAL(20, 8) NULL,
   `resolved_at` DATETIME NULL,

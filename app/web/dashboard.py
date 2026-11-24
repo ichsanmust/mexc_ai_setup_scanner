@@ -200,6 +200,8 @@ def _setup_to_out(
         missed_tp_price=float(row.missed_tp_price) if row.missed_tp_price is not None else None,
         manual_action_at=row.manual_action_at,
         manual_entry_price=float(row.manual_entry_price) if row.manual_entry_price is not None else None,
+        sl_bep_price=float(row.sl_bep_price) if row.sl_bep_price is not None else None,
+        sl_bep_at=row.sl_bep_at,
         manual_notes=row.manual_notes,
         resolved_price=float(row.resolved_price) if row.resolved_price is not None else None,
         resolved_at=row.resolved_at,
@@ -297,6 +299,10 @@ def _ensure_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE trade_setups ADD COLUMN status_history JSON NULL"))
             if "manual_entry_price" not in cols:
                 conn.execute(text("ALTER TABLE trade_setups ADD COLUMN manual_entry_price DECIMAL(20, 8) NULL"))
+            if "sl_bep_price" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN sl_bep_price DECIMAL(20, 8) NULL"))
+            if "sl_bep_at" not in cols:
+                conn.execute(text("ALTER TABLE trade_setups ADD COLUMN sl_bep_at DATETIME NULL"))
             if engine.dialect.name == "mysql":
                 su_type = str(cols.get("strategy_used", {}).get("type", "")).upper()
                 if "40" in su_type:
@@ -714,7 +720,7 @@ def _extract_recent_status_changes(rows: list[TradeSetup], limit: int = 8) -> li
                 )
             )
         elif r.status != "OPEN" or r.entry_hit_at or r.missed_tp_at:
-            from_st = "ENTRY_HIT" if (r.entry_hit_at and r.status in ("HIT_TP", "HIT_SL", "EXPIRED")) else "OPEN"
+            from_st = "ENTRY_HIT" if (r.entry_hit_at and r.status in ("HIT_TP", "HIT_SL", "BEP", "EXPIRED")) else "OPEN"
             at_dt = r.resolved_at or r.manual_action_at or r.entry_hit_at or r.missed_tp_at or r.updated_at
             px = r.resolved_price if r.resolved_price is not None else r.missed_tp_price
             collected.append(
@@ -886,8 +892,26 @@ def get_setup_detail(setup_id: int, db: Session = Depends(get_db)):
     return _setup_to_out(row, db=db)
 
 
+async def _fetch_symbol_live_price(symbol: str, db: Session | None = None) -> float | None:
+    """Fetch current live lastPrice for a single symbol from MEXC public tickers."""
+    rt_cfg = resolve_runtime_settings(db) if db is not None else {}
+    try:
+        async with MexcPublicClient(
+            base_url=rt_cfg.get("mexc_base_url"),
+            proxy_url=rt_cfg.get("mexc_proxy_url"),
+        ) as mexc:
+            tickers = await mexc.get_all_tickers()
+            t = tickers.get(symbol)
+            if t and t.get("lastPrice"):
+                px = float(t["lastPrice"])
+                return px if px > 0 else None
+    except Exception as exc:
+        log.warning("Could not fetch live price for %s during BEP validation: %s", symbol, exc)
+    return None
+
+
 @app.patch("/api/setups/{setup_id}/status", response_model=SetupOut)
-def update_setup_manual_status(
+async def update_setup_manual_status(
     setup_id: int,
     body: SetupStatusUpdate,
     db: Session = Depends(get_db),
@@ -945,7 +969,8 @@ def update_setup_manual_status(
         run_exp
         or (strat_row.suggested_expiry_hours if (strat_row and strat_row.suggested_expiry_hours) else 12)
     )
-    row.status = body.status
+    if body.status != "MOVE_SL_BEP":
+        row.status = body.status
     note_clean = body.manual_notes.strip() if body.manual_notes is not None else (row.manual_notes or "")
 
     def _append_hist(event: str, price: float | None, desc: str, extra: dict[str, Any] | None = None) -> None:
@@ -953,7 +978,7 @@ def update_setup_manual_status(
         item: dict[str, Any] = {
             "at": now.isoformat(),
             "event": event,
-            "status": body.status,
+            "status": row.status,
             "price": round(float(price), 8) if price is not None else None,
             "stop_loss": float(row.stop_loss),
             "take_profit": float(row.take_profit),
@@ -976,9 +1001,108 @@ def update_setup_manual_status(
             }
         return None
 
-    if body.status == "OPEN":
+    if body.status == "MOVE_SL_BEP":
+        final_statuses = {
+            "HIT_TP",
+            "HIT_SL",
+            "BEP",
+            "EXPIRED",
+            "MANUAL_SKIPPED",
+            "CLOSED_MANUAL_TP",
+            "CLOSED_MANUAL_CL",
+        }
+        if row.status in final_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Tidak bisa pindah SL ke BEP karena status setup sudah final ({row.status}).",
+            )
+        if row.status == "OPEN" and row.entry_type == "LIMIT" and not row.entry_hit_at and not row.manual_action_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tidak bisa pindah SL ke BEP: setup LIMIT belum tersentuh Entry.",
+            )
+
+        bep_price = float(body.sl_bep_price) if body.sl_bep_price is not None else eff_entry
+        if row.decision == "LONG":
+            if bep_price < eff_entry:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SL-BEP LONG ({bep_price:g}) tidak boleh di bawah harga Entry ({eff_entry:g}).",
+                )
+            if bep_price >= eff_tp:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SL-BEP LONG ({bep_price:g}) harus di bawah Take Profit ({eff_tp:g}).",
+                )
+        elif row.decision == "SHORT":
+            if bep_price > eff_entry:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SL-BEP SHORT ({bep_price:g}) tidak boleh di atas harga Entry ({eff_entry:g}).",
+                )
+            if bep_price <= eff_tp:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SL-BEP SHORT ({bep_price:g}) harus di atas Take Profit ({eff_tp:g}).",
+                )
+
+        current_price = await _fetch_symbol_live_price(row.symbol, db=db)
+        if current_price is None:
+            current_price = body.live_price
+        if current_price is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Gagal memverifikasi harga live MEXC untuk memastikan posisi sudah profit sebelum pindah SL ke BEP.",
+            )
+
+        if row.decision == "LONG":
+            if current_price <= eff_entry:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Tidak bisa pindah SL ke BEP: posisi LONG belum profit "
+                        f"(harga saat ini {current_price:g} <= Entry {eff_entry:g})."
+                    ),
+                )
+            if current_price <= bep_price:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Harga SL-BEP ({bep_price:g}) harus di bawah harga pasar saat ini "
+                        f"({current_price:g}) untuk posisi LONG."
+                    ),
+                )
+        elif row.decision == "SHORT":
+            if current_price >= eff_entry:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Tidak bisa pindah SL ke BEP: posisi SHORT belum profit "
+                        f"(harga saat ini {current_price:g} >= Entry {eff_entry:g})."
+                    ),
+                )
+            if current_price >= bep_price:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Harga SL-BEP ({bep_price:g}) harus di atas harga pasar saat ini "
+                        f"({current_price:g}) untuk posisi SHORT."
+                    ),
+                )
+
+        row.sl_bep_price = Decimal(f"{bep_price:.8f}")
+        row.sl_bep_at = now
+        _append_hist(
+            "SL_MOVED_TO_BEP",
+            bep_price,
+            f"Pindah SL ke BEP ({bep_price:g}) saat harga {current_price:g}; SL awal tetap {float(row.stop_loss):g}",
+            {"sl_bep_price": round(bep_price, 8), "live_price": round(current_price, 8)},
+        )
+    elif body.status == "OPEN":
         row.manual_action_at = None
         row.manual_entry_price = None
+        row.sl_bep_price = None
+        row.sl_bep_at = None
         row.resolved_price = None
         row.resolved_at = None
         row.entry_hit_at = None
@@ -1155,6 +1279,7 @@ def get_strategy_analytics(
     total_taken_act = 0
     total_sl_no_entry = 0
     total_tp_no_entry = 0
+    total_bep = 0
     total_exp = 0
     total_skip = 0
     all_rrs: list[float] = []
@@ -1182,6 +1307,7 @@ def get_strategy_analytics(
                 or (s.status == "HIT_TP" and not _has_setup_entered(s))
             )
         )
+        bep_c = sum(1 for s in group if s.status == "BEP")
         exp_c = sum(1 for s in group if s.status == "EXPIRED")
         skip_c = sum(1 for s in group if s.status == "MANUAL_SKIPPED")
 
@@ -1202,6 +1328,7 @@ def get_strategy_analytics(
         total_taken_act += taken_c
         total_sl_no_entry += sl_no_entry_c
         total_tp_no_entry += tp_no_entry_c
+        total_bep += bep_c
         total_exp += exp_c
         total_skip += skip_c
         all_rrs.extend(float(s.risk_reward_ratio) for s in group)
@@ -1222,6 +1349,7 @@ def get_strategy_analytics(
                 closed_manual_cl_count=sl_closed_c,
                 sl_no_entry_count=sl_no_entry_c,
                 tp_no_entry_count=tp_no_entry_c,
+                bep_count=bep_c,
                 expired_count=exp_c,
                 manual_taken_count=taken_c,
                 manual_skipped_count=skip_c,
@@ -1251,6 +1379,7 @@ def get_strategy_analytics(
         total_decided_count=overall_decided,
         total_sl_no_entry_count=total_sl_no_entry,
         total_tp_no_entry_count=total_tp_no_entry,
+        total_bep_count=total_bep,
         total_expired_count=total_exp,
         total_skipped_count=total_skip,
         overall_win_rate_pct=overall_wr,

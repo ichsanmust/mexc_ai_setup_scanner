@@ -242,6 +242,7 @@ function statusBadge(setupOrStatus, manualActionAt = null) {
     EXTENDED: { cls: "badge-extended", tip: "Expiry diperpanjang mengikuti strategi & tetap dipantau otomatis oleh Tracker" },
     HIT_TP: { cls: "badge-hit-tp", tip: "Harga menyentuh Take Profit terlebih dahulu (Win)" },
     HIT_SL: { cls: "badge-hit-sl", tip: "Harga menyentuh Stop Loss terlebih dahulu (Loss)" },
+    BEP: { cls: "badge-bep", tip: "Otomatis dari Tracker: harga menyentuh SL-BEP (Break-Even Point)" },
     EXPIRED: { cls: "badge-expired", tip: "Melewati batas Setup Expiry tanpa menyentuh TP/SL" },
     MANUAL_TAKEN: { cls: "badge-manual", tip: "Order dieksekusi manual & tetap dipantau otomatis ke TP/SL/Expired" },
     MANUAL_SKIPPED: { cls: "badge-neutral", tip: "Ditandai manual oleh user untuk dilewati (tidak diambil)" },
@@ -263,8 +264,12 @@ function statusBadge(setupOrStatus, manualActionAt = null) {
     const tpAtStr = formatJakartaDateTime(s.missed_tp_at);
     tags.push(`<span class="badge badge-missed-tp" title="Harga menembus TP (${tpPx}) pada ${escapeHtml(tpAtStr)} tanpa menyentuh Limit Entry">TP NO ENTRY</span>`);
   }
-  if (s.manual_action_at && (st === "HIT_TP" || st === "HIT_SL" || st === "EXPIRED" || st === "CLOSED_MANUAL_TP" || st === "CLOSED_MANUAL_CL")) {
+  if (s.manual_action_at && (st === "HIT_TP" || st === "HIT_SL" || st === "BEP" || st === "EXPIRED" || st === "CLOSED_MANUAL_TP" || st === "CLOSED_MANUAL_CL")) {
     tags.push(`<span class="badge badge-manual" title="Setup ini sempat ditandai Taken manual">TAKEN</span>`);
+  }
+  if (s.sl_bep_price && st !== "BEP") {
+    const bepAtStr = s.sl_bep_at ? formatJakartaDateTime(s.sl_bep_at) : "-";
+    tags.push(`<span class="badge badge-bep" title="SL dipindah ke BEP (${fmtPrice(s.sl_bep_price)}) pada ${escapeHtml(bepAtStr)}">SL-BEP</span>`);
   }
   return `<div style="display:flex; flex-wrap:wrap; gap:4px;">${tags.join("")}</div>`;
 }
@@ -1152,7 +1157,7 @@ function getLatestTransition(setup) {
   }
   if (setup.status !== "OPEN" || setup.entry_hit_at || setup.missed_tp_at) {
     return {
-      fromStatus: setup.entry_hit_at && ["HIT_TP", "HIT_SL", "EXPIRED"].includes(setup.status) ? "ENTRY_HIT" : "OPEN",
+      fromStatus: setup.entry_hit_at && ["HIT_TP", "HIT_SL", "BEP", "EXPIRED"].includes(setup.status) ? "ENTRY_HIT" : "OPEN",
       toStatus: setup.status,
       event: setup.missed_tp_at && setup.status === "OPEN" ? "TP_BEFORE_ENTRY" : setup.status,
       note: "",
@@ -1319,6 +1324,7 @@ async function loadSetups() {
       const changedCls = fresh ? "just-changed" : "";
       const dirBadge = s.decision === "LONG" ? "badge-long" : "badge-short";
       const meLine = s.manual_entry_price ? `<div class="text-accent">ME: ${fmtPrice(s.manual_entry_price)}</div>` : "";
+      const bepLine = s.sl_bep_price ? `<div class="text-bep">SL-BEP: ${fmtPrice(s.sl_bep_price)}</div>` : "";
       const closeLine = s.resolved_price ? `<div>Close: ${fmtPrice(s.resolved_price)}</div>` : "";
       const meta = resolveSetupStrategyMeta(s);
       const holdHtml = meta.holdingPeriod
@@ -1388,6 +1394,7 @@ async function loadSetups() {
             <div>E: ${fmtPrice(s.entry_price)}</div>
             ${meLine}
             <div class="text-red">SL: ${fmtPrice(s.stop_loss)}</div>
+            ${bepLine}
             <div class="text-green">TP: ${fmtPrice(s.take_profit)}</div>
             ${closeLine}
           </td>
@@ -1651,7 +1658,7 @@ function roundPositionPrice(val) {
 function computeChartPriceFormat(candles, setup) {
   const samples = [];
   if (setup) {
-    [setup.entry_price, setup.manual_entry_price, setup.stop_loss, setup.take_profit].forEach((v) => {
+    [setup.entry_price, setup.manual_entry_price, setup.stop_loss, setup.sl_bep_price, setup.take_profit].forEach((v) => {
       if (Number.isFinite(Number(v)) && Number(v) > 0) samples.push(Number(v));
     });
   }
@@ -2017,18 +2024,18 @@ function syncSetupPriceLines() {
   if (hasManualEntry && Math.abs(Number(setup.manual_entry_price) - Number(setup.entry_price)) > 1e-12) {
     nextLines.push(
       state.candleSeries.createPriceLine({
-        price: setup.entry_price,
-        color: "#9ca3af",
-        lineWidth: 1,
+        price: Number(setup.entry_price),
+        color: "#6b7280",
+        lineWidth: 2,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
         title: "AI ENTRY",
       }),
       state.candleSeries.createPriceLine({
-        price: setup.manual_entry_price,
+        price: Number(setup.manual_entry_price),
         color: "#6b21a8",
         lineWidth: 2,
-        lineStyle: LightweightCharts.LineStyle.Solid,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
         title: "ENTRY (MANUAL)",
       })
@@ -2063,6 +2070,22 @@ function syncSetupPriceLines() {
       title: "TAKE PROFIT",
     })
   );
+  if (
+    setup.sl_bep_price !== null &&
+    setup.sl_bep_price !== undefined &&
+    Number(setup.sl_bep_price) > 0
+  ) {
+    nextLines.push(
+      state.candleSeries.createPriceLine({
+        price: Number(setup.sl_bep_price),
+        color: "#f59e0b",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.LargeDashed,
+        axisLabelVisible: true,
+        title: "SL-BEP",
+      })
+    );
+  }
   state.priceLines = nextLines;
 }
 
@@ -2257,7 +2280,9 @@ function selectSetup(setup) {
   document.getElementById("setup-detail-body").classList.remove("hidden");
   document.getElementById("d-entry-type").textContent = setup.manual_entry_price ? "MANUAL" : setup.entry_type;
   document.getElementById("d-entry").textContent = fmtPrice(effEntry);
-  document.getElementById("d-sl").textContent = fmtPrice(setup.stop_loss);
+  document.getElementById("d-sl").textContent = setup.sl_bep_price
+    ? `${fmtPrice(setup.stop_loss)} (BEP: ${fmtPrice(setup.sl_bep_price)})`
+    : fmtPrice(setup.stop_loss);
   document.getElementById("d-tp").textContent = fmtPrice(setup.take_profit);
   document.getElementById("d-rr-conf").textContent = `${Number(setup.risk_reward_ratio).toFixed(2)}R / ${setup.confidence}%`;
   document.getElementById("d-regime").textContent = setup.market_regime;
@@ -2455,6 +2480,12 @@ async function updateManualStatus(newStatus, overrides = null) {
     };
     if (stopLoss !== null) bodyObj.stop_loss = stopLoss;
     if (takeProfit !== null) bodyObj.take_profit = takeProfit;
+    if (overrides && overrides.sl_bep_price !== null && overrides.sl_bep_price !== undefined) {
+      bodyObj.sl_bep_price = overrides.sl_bep_price;
+    }
+    if (overrides && overrides.live_price !== null && overrides.live_price !== undefined) {
+      bodyObj.live_price = overrides.live_price;
+    }
     if (overrides && overrides.extend_hours !== null && overrides.extend_hours !== undefined) {
       bodyObj.extend_hours = overrides.extend_hours;
     }
@@ -2479,6 +2510,7 @@ function syncEditStatusFields(setup) {
   const entryWrap = document.getElementById("edit-manual-entry-wrap");
   const riskWrap = document.getElementById("edit-risk-levels-wrap");
   const extendWrap = document.getElementById("edit-extend-hours-wrap");
+  const bepWrap = document.getElementById("edit-sl-bep-wrap");
   const closeWrap = document.getElementById("edit-close-price-wrap");
   const closeLabel = document.getElementById("edit-close-price-label");
   const closeInput = document.getElementById("edit-close-price");
@@ -2494,11 +2526,13 @@ function syncEditStatusFields(setup) {
     statusVal === "EXTENDED" ||
     statusVal === "OPEN";
   const showExtend = statusVal === "EXTENDED";
+  const showBep = statusVal === "MOVE_SL_BEP";
   const showClose = statusVal === "CLOSED_MANUAL_TP" || statusVal === "CLOSED_MANUAL_CL";
 
   entryWrap.classList.toggle("hidden", !showEntry);
   if (riskWrap) riskWrap.classList.toggle("hidden", !showRiskLevels);
   if (extendWrap) extendWrap.classList.toggle("hidden", !showExtend);
+  if (bepWrap) bepWrap.classList.toggle("hidden", !showBep);
   closeWrap.classList.toggle("hidden", !showClose);
 
   if (statusVal === "CLOSED_MANUAL_TP") {
@@ -2524,6 +2558,8 @@ function openEditStatusModal(setup) {
   if (extInput) extInput.value = meta.expiryHours || 12;
 
   document.getElementById("edit-manual-entry").value = setup.manual_entry_price ?? setup.entry_price ?? "";
+  const bepInput = document.getElementById("edit-sl-bep-price");
+  if (bepInput) bepInput.value = setup.sl_bep_price ?? setup.manual_entry_price ?? setup.entry_price ?? "";
   document.getElementById("edit-stop-loss").value = setup.stop_loss ?? "";
   document.getElementById("edit-take-profit").value = setup.take_profit ?? "";
   document.getElementById("edit-close-price").value = setup.resolved_price ?? "";
@@ -3758,6 +3794,38 @@ function wireEvents() {
       return;
     }
 
+    const bepParsed = parseOptionalFloatText(document.getElementById("edit-sl-bep-price")?.value);
+    if (statusVal === "MOVE_SL_BEP") {
+      if (Number.isNaN(bepParsed)) {
+        showToast("Harga SL-BEP harus berupa angka positif.", true);
+        return;
+      }
+      const stSetup = state.editingSetup;
+      if (stSetup) {
+        const effEntry = Number(stSetup.manual_entry_price ?? stSetup.entry_price);
+        const effBep = bepParsed ?? effEntry;
+        const livePx = Number(stSetup.live_price);
+        if (stSetup.decision === "LONG" && effBep < effEntry) {
+          showToast(`SL-BEP LONG (${fmtPrice(effBep)}) tidak boleh di bawah Entry (${fmtPrice(effEntry)}).`, true);
+          return;
+        }
+        if (stSetup.decision === "SHORT" && effBep > effEntry) {
+          showToast(`SL-BEP SHORT (${fmtPrice(effBep)}) tidak boleh di atas Entry (${fmtPrice(effEntry)}).`, true);
+          return;
+        }
+        if (Number.isFinite(livePx) && livePx > 0) {
+          if (stSetup.decision === "LONG" && (livePx <= effEntry || livePx <= effBep)) {
+            showToast(`Posisi LONG belum profit / harga (${fmtPrice(livePx)}) harus di atas Entry & SL-BEP.`, true);
+            return;
+          }
+          if (stSetup.decision === "SHORT" && (livePx >= effEntry || livePx >= effBep)) {
+            showToast(`Posisi SHORT belum profit / harga (${fmtPrice(livePx)}) harus di bawah Entry & SL-BEP.`, true);
+            return;
+          }
+        }
+      }
+    }
+
     const canSendRisk = statusVal === "MANUAL_TAKEN" || statusVal === "ENTRY_HIT" || statusVal === "EXTENDED" || statusVal === "OPEN";
     const ok = await updateManualStatus(statusVal, {
       manual_entry_price:
@@ -3767,6 +3835,8 @@ function wireEvents() {
         statusVal === "CLOSED_MANUAL_CL"
           ? entryParsed
           : null,
+      sl_bep_price: statusVal === "MOVE_SL_BEP" ? bepParsed : null,
+      live_price: statusVal === "MOVE_SL_BEP" && state.editingSetup?.live_price ? Number(state.editingSetup.live_price) : null,
       stop_loss: canSendRisk ? slParsed : null,
       take_profit: canSendRisk ? tpParsed : null,
       resolved_price:

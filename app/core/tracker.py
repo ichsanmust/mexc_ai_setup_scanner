@@ -102,6 +102,11 @@ def evaluate_setup_trace(
     entry = float(setup.entry_price)
     sl = float(setup.stop_loss)
     tp = float(setup.take_profit)
+    bep_price = (
+        float(setup.sl_bep_price)
+        if setup.sl_bep_price is not None and float(setup.sl_bep_price) > 0
+        else None
+    )
     direction = setup.decision
     already_entered = (
         setup.status in ("ENTRY_HIT", "MANUAL_TAKEN")
@@ -119,6 +124,7 @@ def evaluate_setup_trace(
 
     since_dt, is_reactivated = _get_tracking_since_dt(setup)
     since_ts = _to_utc_ts(since_dt)
+    bep_ts = _to_utc_ts(setup.sl_bep_at) if setup.sl_bep_at else since_ts
 
     for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
         c_ts = int(candle["time"])
@@ -130,6 +136,9 @@ def evaluate_setup_trace(
         c_dt = _from_utc_ts(c_ts)
         high = float(candle["high"])
         low = float(candle["low"])
+        bep_active = bep_price is not None and (
+            c_ts >= bep_ts if candle_interval != "Min1" else c_ts >= bep_ts - 60
+        )
 
         if direction == "LONG":
             entered_this_candle = False
@@ -140,10 +149,20 @@ def evaluate_setup_trace(
             if not entry_touched and high >= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
+            hit_bep = bep_active and low <= bep_price
             hit_sl = low <= sl
             # On coarse candles (> Min1), don't assume LIMIT entry filled before TP inside the same bar
             allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
             hit_tp = high >= tp and allow_tp
+            if hit_bep:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": bep_price,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if hit_sl and hit_tp:
                 return {
                     "new_status": "HIT_SL",
@@ -180,9 +199,19 @@ def evaluate_setup_trace(
             if not entry_touched and low <= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
+            hit_bep = bep_active and high >= bep_price
             hit_sl = high >= sl
             allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
             hit_tp = low <= tp and allow_tp
+            if hit_bep:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": bep_price,
+                    "resolved_dt": c_dt,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if hit_sl and hit_tp:
                 return {
                     "new_status": "HIT_SL",
@@ -214,6 +243,15 @@ def evaluate_setup_trace(
     # Check live ticker lastPrice (catches movement between candle buckets)
     if last_price is not None and last_price > 0:
         if direction == "LONG":
+            if bep_price is not None and last_price <= bep_price:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if last_price <= sl:
                 return {
                     "new_status": "HIT_SL",
@@ -239,6 +277,15 @@ def evaluate_setup_trace(
                     "missed_tp_price": detected_missed_tp_price,
                 }
         elif direction == "SHORT":
+            if bep_price is not None and last_price >= bep_price:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if last_price >= sl:
                 return {
                     "new_status": "HIT_SL",
@@ -337,7 +384,7 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
         .all()
     )
     if not open_setups:
-        return {"checked": 0, "entry_hit": 0, "hit_tp": 0, "hit_sl": 0, "expired": 0}
+        return {"checked": 0, "entry_hit": 0, "hit_tp": 0, "hit_sl": 0, "hit_bep": 0, "expired": 0}
 
     tickers = await mexc_client.get_all_tickers()
     now = utcnow()
@@ -360,7 +407,7 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
             log.warning("Tracker failed to fetch kline for %s: %s", sym, exc)
             kline_map[sym] = []
 
-    stats = {"checked": len(open_setups), "entry_hit": 0, "hit_tp": 0, "hit_sl": 0, "expired": 0}
+    stats = {"checked": len(open_setups), "entry_hit": 0, "hit_tp": 0, "hit_sl": 0, "hit_bep": 0, "expired": 0}
 
     for setup in open_setups:
         ticker = tickers.get(setup.symbol, {})
@@ -437,6 +484,16 @@ async def check_open_setups(db: Session, mexc_client: MexcPublicClient) -> dict[
                         status="HIT_SL",
                         price=resolved_price,
                         note="Kena Stop Loss setelah Entry" if had_entry else "Jebol Stop Loss sebelum menyentuh Entry",
+                        at_dt=ev_dt,
+                    )
+                elif new_status == "BEP":
+                    stats["hit_bep"] += 1
+                    _append_setup_history(
+                        setup,
+                        event="HIT_BEP",
+                        status="BEP",
+                        price=resolved_price,
+                        note=f"Kena SL-BEP ({float(resolved_price):g})" if resolved_price is not None else "Kena SL-BEP",
                         at_dt=ev_dt,
                     )
                 elif new_status == "EXPIRED":

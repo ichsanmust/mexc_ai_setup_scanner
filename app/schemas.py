@@ -16,6 +16,7 @@ SetupStatusType = Literal[
     "EXTENDED",
     "HIT_TP",
     "HIT_SL",
+    "BEP",
     "EXPIRED",
     "MANUAL_TAKEN",
     "MANUAL_SKIPPED",
@@ -92,6 +93,8 @@ class SetupOut(BaseModel):
     missed_tp_price: Optional[float] = None
     manual_action_at: Optional[datetime] = None
     manual_entry_price: Optional[float] = None
+    sl_bep_price: Optional[float] = None
+    sl_bep_at: Optional[datetime] = None
     manual_notes: Optional[str] = None
     resolved_price: Optional[float] = None
     resolved_at: Optional[datetime] = None
@@ -142,9 +145,13 @@ class SetupStatusUpdate(BaseModel):
         "MANUAL_SKIPPED",
         "CLOSED_MANUAL_TP",
         "CLOSED_MANUAL_CL",
+        "BEP",
         "EXPIRED",
+        "MOVE_SL_BEP",
     ]
     manual_entry_price: Optional[float] = Field(default=None, gt=0)
+    sl_bep_price: Optional[float] = Field(default=None, gt=0)
+    live_price: Optional[float] = Field(default=None, gt=0)
     stop_loss: Optional[float] = Field(default=None, gt=0)
     take_profit: Optional[float] = Field(default=None, gt=0)
     resolved_price: Optional[float] = Field(default=None, gt=0)
@@ -169,6 +176,7 @@ class StrategyAnalyticsItem(BaseModel):
     closed_manual_cl_count: int = 0
     sl_no_entry_count: int = 0
     tp_no_entry_count: int = 0
+    bep_count: int = 0
     expired_count: int
     manual_taken_count: int
     manual_skipped_count: int
@@ -195,6 +203,7 @@ class AnalyticsSummaryResponse(BaseModel):
     total_decided_count: int = 0
     total_sl_no_entry_count: int = 0
     total_tp_no_entry_count: int = 0
+    total_bep_count: int = 0
     total_expired_count: int = 0
     total_skipped_count: int = 0
     overall_win_rate_pct: float

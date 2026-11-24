@@ -19,7 +19,8 @@ Aplikasi lokal berbasis Python untuk memindai peluang trading **Crypto Futures d
   - Skema output AI (`AISetupDecision`) menempatkan `htf_analysis`, `ltf_trigger_analysis`, dan `checklist` konfluensi sebelum `decision` & level harga, dilengkapi 1× retry otomatis bila JSON/validasi gagal, serta pelacakan `prompt_version` & endpoint kalibrasi `GET /api/analytics/calibration`.
   - Validator menolak `confidence < min_confidence`, memverifikasi konsistensi `checklist`, memvalidasi jarak SL (`0.35x–5.0x ATR14 LTF`) dan kewajaran jarak `LIMIT`/`MARKET` (entry `MARKET` di-re-anchor ke `last_price` aktual), menghitung ulang R:R (termasuk buffer fee round-trip `0.04%`) terhadap `min_rr` strategi (disesuaikan oleh **Risk Profile**: `CONSERVATIVE` standar, `MODERATE` `-0.2` min `1.3`, `AGGRESSIVE` `-0.3` min `1.2`), serta mencegah duplikasi maupun konflik arah berlawanan (`LONG` vs `SHORT`) pada pair yang sama.
 - **Outcome Tracker Adaptif & Manajemen Status Lengkap:**
-  - Mendukung **10 status**: `OPEN`, `ENTRY_HIT`, `EXTENDED`, `MANUAL_TAKEN`, `MANUAL_SKIPPED`, `HIT_TP`, `HIT_SL`, `EXPIRED`, `CLOSED_MANUAL_TP`, `CLOSED_MANUAL_CL`.
+  - Mendukung **11 status**: `OPEN`, `ENTRY_HIT`, `EXTENDED`, `MANUAL_TAKEN`, `MANUAL_SKIPPED`, `HIT_TP`, `HIT_SL`, `BEP`, `EXPIRED`, `CLOSED_MANUAL_TP`, `CLOSED_MANUAL_CL`.
+  - Mendukung fitur **Pindah SL ke BEP (`SL-BEP`)** tanpa mengubah `stop_loss` awal maupun status utama (tervalidasi harga live sudah profit, tampil sebagai garis putus-putus oranye di chart, dan otomatis berubah menjadi status akhir **`BEP`** oleh Tracker bila harga menyentuh `sl_bep_price`).
   - Tracker menggunakan interval adaptif (`Min1` / `Min5` / `Min15`) dan live ticker `lastPrice` sehingga perubahan Entry, SL, dan TP pada posisi `LONG` maupun `SHORT` tetap akurat bahkan saat harga bergerak cepat antar siklus cek (min 15 detik). Status `EXTENDED` mempertahankan statusnya walaupun Entry tersentuh (`entry_hit_at` tetap dicatat + badge `ENTRY`) dan memprioritaskan `expiry_hours` dari snapshot scan run terkait.
 - **Audit Snapshot Setting per Scan Run (`scan_runs.settings_snapshot`):** Setiap eksekusi scan merekam snapshot lengkap strategi beserta `strategy_timeframes` (`HTF/LTF`, `kline_limit`, `expiry_hours` tiap strategi), filter ATR/volume, ringkasan `btc_market_mover`, dan konfigurasi AI yang dipakai untuk diaudit di modal **Detail Evaluasi** dan sebagai referensi perpanjangan expiry setup terkait.
 - **BTC_USDT Market Mover & Sugesti Strategi (`app/core/market_mover.py`):**
@@ -142,7 +143,7 @@ Setelah aplikasi berjalan pada port default `8001`:
 - Gunakan **Mark Taken**, **Skip**, atau **Edit Status / Close** (untuk ubah status, isi `manual_entry_price`, sesuaikan SL/TP baru, atau tutup manual `CLOSED_MANUAL_TP` / `CLOSED_MANUAL_CL`).
 - Klik ikon **`i`** di sebelah *Daftar Setup Trading* untuk melihat Legend status, dan klik **Run ID (`Run #...` / `#...`)** atau **Detail Evaluasi** untuk membuka popup settingan snapshot scan & evaluasi tiap pair.
 
-### Cara Kerja Outcome Tracker & Daftar 10 Status Setup
+### Cara Kerja Outcome Tracker & Daftar 11 Status Setup
 Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomatis setiap `tracker_interval_seconds` (default `60` detik, minimum `15` detik; tetap berjalan walau mode Auto Scan diset ke Manual), dan bisa dijalankan kapan saja lewat tombol **Check Outcomes** (`POST /api/tracker/run`).
 
 - **Mekanisme Pengecekan Otomatis:** Tracker mengevaluasi seluruh setup berstatus `OPEN`, `ENTRY_HIT`, `EXTENDED`, dan `MANUAL_TAKEN` menggunakan candle historis adaptif (`Min1` / `Min5` / `Min15`) sejak waktu dibuat (atau sejak waktu `MANUAL_TAKEN`, `EXTENDED`, maupun `RESET_OPEN` untuk setup yang direaktivasi) plus harga ticker live (`lastPrice`):
@@ -159,6 +160,7 @@ Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomati
 | `EXTENDED` | `AKTIF` / `EXTENDED` | ✅ Ya | `Setup Aktif` | Perpanjangan manual batas `expires_at` mengikuti snapshot strategi saat scan run (atau jam kustom); tetap dipantau Tracker dan tidak tertimpa balik ke `ENTRY_HIT`. |
 | `HIT_TP` | `HIT_TP` | ❌ Final | **Win (Executed)** | Otomatis dari Tracker: harga menyentuh `Take Profit` terlebih dahulu setelah `Entry` tersentuh. |
 | `HIT_SL` | `HIT_SL` | ❌ Final | **Loss (Executed)** / `SL No Entry` | Hanya dihitung **Loss** pada Win Rate jika sudah pernah Entry (`ENTRY_HIT`/`MANUAL_TAKEN`/`MARKET`); jika belum pernah Entry dicatat sebagai **`SL No Entry`**. |
+| `BEP` | `BEP` | ❌ Final | **Break-Even (0 Loss)** | Otomatis dari Tracker: harga menyentuh `sl_bep_price` setelah **Pindah SL ke BEP** (tidak dihitung Loss pada Win Rate). |
 | `EXPIRED` | `EXPIRED` | ❌ Final | `Expired` | Otomatis dari Tracker: melewati `expires_at` sebelum mengenai `TP` maupun `SL`. |
 | `MANUAL_TAKEN` | `AKTIF` / `TAKEN` | ✅ Ya | `Setup Aktif` & `Taken` | Ditandai manual oleh user sudah dieksekusi di MEXC (bisa isi `manual_entry_price`); tetap dipantau Tracker sampai `TP`/`SL`/`EXPIRED`. |
 | `MANUAL_SKIPPED` | `SKIPPED` | ❌ Final | `Skipped` | Ditandai manual (*Skip*) bahwa setup ini dilewati dan tidak dieksekusi. |
@@ -170,6 +172,7 @@ Background tracker ([app/core/tracker.py](app/core/tracker.py)) berjalan otomati
   - **`NO ENTRY`** *(peringatan kuning)*: muncul di samping `HIT_SL` jika harga langsung menjebol `SL` sebelum sempat menjemput Limit Entry.
   - **`TP NO ENTRY`** *(hijau putus-putus)*: harga sudah menembus `TP` duluan (`missed_tp_at`, `missed_tp_price`) sebelum menyentuh Limit Entry — menandakan analisa arah AI benar, hanya level limit terlalu dalam.
   - **`TAKEN`** *(ungu)*: setup sempat ditandai `MANUAL_TAKEN` oleh user (bisa juga dipakai pada setup yang sudah `HIT_SL` atau `EXPIRED` dengan mengisi **Harga Entry Aktual**, **SL Baru**, & **TP Baru** di modal Edit Status untuk dipantau ulang oleh Tracker).
+  - **`SL-BEP`** *(biru)*: setup aktif sudah dipindahkan SL-nya ke **Break-Even Point** (`sl_bep_price`) melalui modal Edit Status → **Pindah SL ke BEP** (hanya diizinkan saat posisi `LONG`/`SHORT` sudah dalam kondisi profit terhadap harga live MEXC; `stop_loss` awal dan status utama tetap dipertahankan, dicatat ke `status_history`, serta tampil sebagai garis `LargeDashed` oranye di chart `Mode Biasa`).
 
 ---
 
