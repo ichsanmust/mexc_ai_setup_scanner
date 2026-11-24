@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261123m" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261124a" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -189,6 +189,31 @@
 
     <!-- View: Scanner (Full-Width Setups List + Chart & Setup Detail) -->
     <div id="view-scanner">
+    <section id="btc-mover-card" class="card btc-mover-card">
+      <div class="card-header wrap btc-mover-header">
+        <div class="btc-mover-title-row">
+          <div class="btc-mover-badge">BTC</div>
+          <div>
+            <div class="btc-mover-title-line">
+              <h3>BTC_USDT Market Mover &amp; Sugesti Strategi</h3>
+              <span id="btc-mover-price-pill" class="badge badge-neutral">Belum discan</span>
+              <span id="btc-mover-regime-pill" class="badge badge-neutral hidden">-</span>
+              <span id="btc-mover-align-pill" class="badge badge-neutral hidden">-</span>
+            </div>
+            <span id="btc-mover-subtitle" class="subtitle-sm">Pantau arah BTC_USDT (Scalp, Intraday, Swing) untuk menyimpulkan &amp; menyesuaikan settingan strategi scan.</span>
+          </div>
+        </div>
+        <div class="btc-mover-actions">
+          <button type="button" id="btn-apply-btc-suggestion" class="btn btn-primary btn-sm hidden">Terapkan Sugesti Settingan</button>
+          <button type="button" id="btn-scan-btc-mover" class="btn btn-secondary btn-sm">Scan BTC_USDT</button>
+          <button type="button" id="btn-toggle-btc-mover" class="btn btn-secondary btn-sm" aria-expanded="true" title="Tampilkan / Sembunyikan panel BTC Market Mover">Sembunyikan</button>
+        </div>
+      </div>
+      <div id="btc-mover-body" class="btc-mover-body">
+        <div class="subtitle-sm">Klik <strong>Scan BTC_USDT</strong> untuk membaca kondisi BTC saat ini (Scalp, Harian/Intraday, Swing) dan melihat sugesti settingan scan.</div>
+      </div>
+    </section>
+
     <section class="scanner-setups-row">
       <div class="card setups-panel">
         <div class="card-header wrap">

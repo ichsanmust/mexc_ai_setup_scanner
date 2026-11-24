@@ -444,6 +444,10 @@ function renderScanRunsList(runs) {
       const cfgLine = cfg
         ? `<div class="subtitle-sm">${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</div>`
         : `<div class="subtitle-sm">Strategi: ${escapeHtml(r.strategy || "-")}</div>`;
+      const btcSnap = cfg && cfg.btc_market_mover ? cfg.btc_market_mover : null;
+      const btcLine = btcSnap
+        ? `<div class="subtitle-sm">BTC Mover: <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> (${escapeHtml(btcSnap.overall_bias || "-")}) &bull; Saran: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code></div>`
+        : "";
       return `
         <div class="scan-run-chip ${cls}">
           <div class="run-top">
@@ -452,6 +456,7 @@ function renderScanRunsList(runs) {
           </div>
           <div class="subtitle-sm">Pair: ${r.top_pairs_count} | Pre: ${r.prefiltered_count} | AI: ${r.ai_analyzed_count} | Setup: <b>${r.setups_created_count}</b></div>
           ${cfgLine}
+          ${btcLine}
           <div class="scan-run-footer">
             ${errBadge}
             <button type="button" class="btn btn-secondary btn-sm" data-eval-run="${r.id}">Detail Evaluasi</button>
@@ -475,11 +480,16 @@ function buildScanSettingsHtml(cfg, fallbackStrategy) {
   const maxVolStr = Number(cfg.max_24h_quote_volume || 0) > 0
     ? `$${Number(cfg.max_24h_quote_volume).toLocaleString("en-US")}`
     : "Unlimited";
+  const btcSnap = cfg.btc_market_mover || null;
+  const btcHtml = btcSnap
+    ? `<div><strong>BTC_USDT Market Mover:</strong> Regime <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> (${escapeHtml(btcSnap.overall_bias || "-")}) &bull; Alignment: <b>${escapeHtml(btcSnap.alignment || "-")}</b> &bull; Saran Strategi: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code> (${escapeHtml(btcSnap.suggested_risk_profile || "-")})</div>`
+    : "";
   return `
     <div class="eval-settings-box">
       <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
       <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></div>
       <div><strong>Filter &amp; Risk:</strong> Profil <b>${escapeHtml(cfg.risk_profile || "CONSERVATIVE")}</b> &bull; Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
+      ${btcHtml}
     </div>`;
 }
 
@@ -3771,6 +3781,21 @@ function wireEvents() {
 
   document.getElementById("btn-dismiss-error").addEventListener("click", hideErrorBanner);
 
+  const btnScanBtc = document.getElementById("btn-scan-btc-mover");
+  if (btnScanBtc) btnScanBtc.addEventListener("click", triggerBtcMarketMoverScan);
+  const btnApplyBtc = document.getElementById("btn-apply-btc-suggestion");
+  if (btnApplyBtc) btnApplyBtc.addEventListener("click", applyBtcMarketMoverSuggestion);
+  const btnToggleBtc = document.getElementById("btn-toggle-btc-mover");
+  if (btnToggleBtc) {
+    btnToggleBtc.addEventListener("click", () => {
+      const body = document.getElementById("btc-mover-body");
+      if (!body) return;
+      const hidden = body.classList.toggle("hidden");
+      btnToggleBtc.textContent = hidden ? "Tampilkan" : "Sembunyikan";
+      btnToggleBtc.setAttribute("aria-expanded", String(!hidden));
+    });
+  }
+
   document.getElementById("btn-run-scan").addEventListener("click", async () => {
     try {
       hideErrorBanner();
@@ -4041,6 +4066,193 @@ function switchMainView(viewName, updateHash = true) {
   });
 }
 
+let latestBtcMoverReport = null;
+
+function _btcRegimeBadgeClass(regime) {
+  if (regime === "TRENDING_UP") return "badge-hit-tp";
+  if (regime === "TRENDING_DOWN" || regime === "HIGH_VOLATILITY") return "badge-hit-sl";
+  if (regime === "RANGING") return "badge-open";
+  return "badge-neutral";
+}
+
+function renderBtcMarketMover(report) {
+  latestBtcMoverReport = report || null;
+  const pricePill = document.getElementById("btc-mover-price-pill");
+  const regimePill = document.getElementById("btc-mover-regime-pill");
+  const alignPill = document.getElementById("btc-mover-align-pill");
+  const subtitleEl = document.getElementById("btc-mover-subtitle");
+  const bodyEl = document.getElementById("btc-mover-body");
+  const applyBtn = document.getElementById("btn-apply-btc-suggestion");
+  if (!pricePill || !bodyEl) return;
+
+  if (!report || !report.btc) {
+    pricePill.textContent = "Belum discan";
+    pricePill.className = "badge badge-neutral";
+    regimePill?.classList.add("hidden");
+    alignPill?.classList.add("hidden");
+    applyBtn?.classList.add("hidden");
+    bodyEl.innerHTML = `<div class="subtitle-sm">Klik <strong>Scan BTC_USDT</strong> untuk membaca kondisi BTC saat ini (Scalp, Harian/Intraday, Swing) dan melihat sugesti settingan scan.</div>`;
+    return;
+  }
+
+  const btc = report.btc;
+  const adv = report.advisor || {};
+  const curr = adv.current_summary || {};
+  const sug = adv.suggested_settings || {};
+  const chg = Number(btc.change_24h_pct || 0);
+  const chgStr = `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`;
+
+  pricePill.textContent = `$${Number(btc.last_price || 0).toLocaleString("en-US")} (${chgStr})`;
+  pricePill.className = `badge ${chg >= 0 ? "badge-hit-tp" : "badge-hit-sl"}`;
+
+  if (regimePill) {
+    regimePill.textContent = `${btc.overall_regime || "-"} • ${btc.overall_bias || "-"}`;
+    regimePill.className = `badge ${_btcRegimeBadgeClass(btc.overall_regime)}`;
+  }
+
+  const diffs = Array.isArray(sug.diffs) ? sug.diffs : [];
+  if (alignPill) {
+    const al = adv.alignment || "SELARAS";
+    alignPill.textContent = al === "SELARAS" ? "Settingan Selaras" : `${diffs.length} Sugesti Settingan`;
+    alignPill.className = `badge ${al === "SELARAS" ? "badge-hit-tp" : "badge-open"}`;
+  }
+
+  if (subtitleEl) {
+    const scannedAt = btc.scanned_at ? formatJakartaDateTime(btc.scanned_at) : "-";
+    subtitleEl.textContent = `Scan BTC terakhir: ${scannedAt} • Volatilitas: ${btc.volatility_state || "-"} • Funding: ${Number(btc.funding_rate_pct || 0).toFixed(4)}%`;
+  }
+
+  if (applyBtn) {
+    if (diffs.length > 0 && sug.patch_payload) {
+      applyBtn.classList.remove("hidden");
+    } else {
+      applyBtn.classList.add("hidden");
+    }
+  }
+
+  const stylesObj = btc.styles || {};
+  const styleOrder = ["SCALP", "INTRADAY", "SWING"];
+  const stylesHtml = styleOrder
+    .map((key) => {
+      const st = stylesObj[key];
+      if (!st) return "";
+      const htf = st.htf || {};
+      const ltf = st.ltf || {};
+      const tfLabel = htf.interval && ltf.interval ? `${htf.interval}/${ltf.interval}` : "-";
+      return `
+        <div class="btc-style-box">
+          <div class="btc-style-top">
+            <strong>${escapeHtml(st.label || key)}</strong>
+            <span class="badge ${_btcRegimeBadgeClass(st.regime)}">${escapeHtml(st.regime || "-")}</span>
+          </div>
+          <div class="btc-style-metrics">
+            <span>TF: <b>${escapeHtml(tfLabel)}</b></span>
+            <span>Bias: <b>${escapeHtml(st.bias || "-")}</b></span>
+            <span>ATR: <b>${ltf.atr_pct ?? "-"}%</b></span>
+            <span>RSI: <b>${ltf.rsi14 ?? "-"}</b></span>
+          </div>
+          <div class="btc-style-summary">${escapeHtml(st.summary || "-")}</div>
+        </div>`;
+    })
+    .join("");
+
+  const stratRecs = Array.isArray(sug.strategy_recommendations) ? sug.strategy_recommendations : [];
+  const stratChipsHtml = stratRecs
+    .map((r) => {
+      const cls = r.recommended_active ? "rec-on" : "rec-off";
+      const badgeText = r.recommended_active ? "Rekomendasi AKTIF" : "Pause Sementara";
+      return `<span class="btc-strat-chip ${cls}" title="${escapeHtml(r.reason || "")}"><b>${escapeHtml(r.name)}</b> (${escapeHtml(r.trade_style || "-")}) — ${badgeText}</span>`;
+    })
+    .join("");
+
+  const diffsHtml = diffs.length
+    ? `<div class="btc-diff-list">${diffs
+        .map(
+          (d) => `
+          <div class="btc-diff-item">
+            <div class="btc-diff-top">
+              <strong>${escapeHtml(d.label || d.field)}</strong>
+              <span><code>${escapeHtml(String(d.current))}</code> &rarr; <b><code>${escapeHtml(String(d.suggested))}</code></b></span>
+            </div>
+            <div class="subtitle-sm">${escapeHtml(d.reason || "")}</div>
+          </div>`
+        )
+        .join("")}</div>`
+    : `<div class="subtitle-sm">Semua parameter settingan scan saat ini sudah selaras dengan kondisi BTC_USDT.</div>`;
+
+  bodyEl.innerHTML = `
+    <div class="btc-mover-styles-grid">${stylesHtml}</div>
+    <div class="btc-advisor-grid">
+      <div class="btc-advisor-box">
+        <h4>Kesimpulan Settingan Scan Saat Ini</h4>
+        <p>${escapeHtml(curr.conclusion || "-")}</p>
+        <div class="btc-strat-chips">${stratChipsHtml}</div>
+      </div>
+      <div class="btc-advisor-box">
+        <h4>Sugesti Settingan (${escapeHtml((sug.recommended_styles || []).join(" / ") || "ALL")})</h4>
+        <p>${escapeHtml(sug.headline || "-")}</p>
+        ${diffsHtml}
+      </div>
+    </div>`;
+}
+
+async function loadBtcMarketMover() {
+  try {
+    const res = await apiRequest("/api/market-mover/btc");
+    renderBtcMarketMover(res.has_data ? res.report : null);
+  } catch (err) {
+    // Keep panel usable even if initial fetch fails silently
+  }
+}
+
+async function triggerBtcMarketMoverScan() {
+  const btn = document.getElementById("btn-scan-btc-mover");
+  const prevText = btn ? btn.textContent : "Scan BTC_USDT";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Scanning BTC...";
+  }
+  try {
+    hideErrorBanner();
+    const res = await apiRequest("/api/market-mover/btc/scan", { method: "POST" });
+    renderBtcMarketMover(res.report);
+    const body = document.getElementById("btc-mover-body");
+    if (body && body.classList.contains("hidden")) {
+      body.classList.remove("hidden");
+      const toggleBtn = document.getElementById("btn-toggle-btc-mover");
+      if (toggleBtn) toggleBtn.textContent = "Sembunyikan";
+    }
+    showToast("Scan BTC_USDT selesai — kesimpulan & sugesti diperbarui.");
+  } catch (err) {
+    showErrorBanner("Gagal Scan BTC_USDT", err.message);
+    showToast(err.message, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
+  }
+}
+
+async function applyBtcMarketMoverSuggestion() {
+  const payload = latestBtcMoverReport?.advisor?.suggested_settings?.patch_payload;
+  if (!payload) return;
+  const btn = document.getElementById("btn-apply-btc-suggestion");
+  if (btn) btn.disabled = true;
+  try {
+    await apiRequest("/api/scanner/settings", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    await Promise.all([loadStrategies(), loadBtcMarketMover()]);
+    showToast("Sugesti settingan berhasil diterapkan ke konfigurasi scanner.");
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function bootstrap() {
   const savedLiveMs = localStorage.getItem("mexc_live_chart_ms");
   if (savedLiveMs !== null) {
@@ -4060,7 +4272,7 @@ async function bootstrap() {
   const hashView = (window.location.hash || "").replace(/^#/, "");
   const initialView = MAIN_VIEWS.includes(hashView) ? hashView : "scanner";
   switchMainView(initialView, false);
-  await Promise.all([loadStrategies(), loadHealthAndStatus(), loadAnalytics(), loadSetups()]);
+  await Promise.all([loadStrategies(), loadHealthAndStatus(), loadAnalytics(), loadSetups(), loadBtcMarketMover()]);
   updateTopbarOverflow();
   if (initialView === "dashboard" && state.strategyChart) {
     state.strategyChart.resize();

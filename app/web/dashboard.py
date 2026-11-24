@@ -25,6 +25,7 @@ from ..config import (
     STRATEGY_MIN_RR,
     settings,
 )
+from ..core.market_mover import load_latest_btc_market_mover, scan_btc_market_mover
 from ..core.pipeline import scan_pipeline
 from ..core.runtime_settings import resolve_runtime_settings
 from ..core.tracker import check_open_setups, ensure_created_history
@@ -590,6 +591,36 @@ async def trigger_scan_now(
         "prev_run_id": prev_run_id,
         "message": "Scan market MEXC Futures dimulai di background.",
     }
+
+
+@app.get("/api/market-mover/btc")
+def get_btc_market_mover(db: Session = Depends(get_db)):
+    """Return latest persisted BTC_USDT Market Mover scan & strategy advisor report."""
+    report = load_latest_btc_market_mover(db)
+    return {"has_data": report is not None, "report": report}
+
+
+@app.post("/api/market-mover/btc/scan")
+async def trigger_btc_market_mover_scan(db: Session = Depends(get_db)):
+    """Scan BTC_USDT across Scalp, Intraday, and Swing timeframes and return strategy suggestions."""
+    rt_cfg = resolve_runtime_settings(db)
+    try:
+        report = await scan_btc_market_mover(db, rt_cfg=rt_cfg)
+        return {"has_data": True, "report": report}
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Koneksi ke MEXC ({rt_cfg['mexc_base_url']}) gagal saat scan BTC_USDT: {exc}. "
+                "Periksa koneksi/VPN atau atur MEXC Proxy URL di Settings."
+            ),
+        ) from exc
+    except Exception as exc:
+        log.exception("BTC_USDT Market Mover scan failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gagal memindai BTC_USDT: {exc}",
+        ) from exc
 
 
 @app.get("/api/scanner/runs/{run_id}/evaluations", response_model=ScanRunEvaluationsResponse)

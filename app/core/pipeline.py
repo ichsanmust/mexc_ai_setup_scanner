@@ -23,6 +23,7 @@ from ..database import SessionLocal
 from ..models import ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
 from ..scanner.features import prefilter_and_build_snapshot, summarize_timeframe
 from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
+from .market_mover import analyze_btc_market_mover, build_btc_strategy_advisor
 from .runtime_settings import resolve_runtime_settings
 from .validator import validate_and_guard_setup
 
@@ -250,9 +251,11 @@ class ScanPipeline:
 
             # Ensure BTC_USDT candles are available for global market_context (reuse if already in top_pairs)
             btc_candles_by_iv: dict[str, list[dict[str, Any]]] = {}
+            btc_ticker: dict[str, Any] | None = None
             for item in pair_results:
                 if not isinstance(item, Exception) and item.get("symbol") == "BTC_USDT":
                     btc_candles_by_iv = item.get("candles_by_iv") or {}
+                    btc_ticker = item.get("ticker")
                     break
             if not btc_candles_by_iv and top_pairs:
                 try:
@@ -262,6 +265,32 @@ class ScanPipeline:
                     btc_candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, btc_fetched)}
                 except Exception as exc:
                     log.debug("Could not fetch BTC_USDT context klines: %s", exc)
+
+            btc_market_mover_summary: dict[str, Any] | None = None
+            if btc_candles_by_iv:
+                try:
+                    btc_analysis = analyze_btc_market_mover(btc_candles_by_iv, ticker=btc_ticker)
+                    db_strats = db.query(Strategy).order_by(Strategy.id.asc()).all()
+                    btc_advisor = build_btc_strategy_advisor(btc_analysis, rt_cfg, db_strats)
+                    btc_market_mover_summary = {
+                        "last_price": btc_analysis.get("last_price"),
+                        "change_24h_pct": btc_analysis.get("change_24h_pct"),
+                        "overall_regime": btc_analysis.get("overall_regime"),
+                        "overall_bias": btc_analysis.get("overall_bias"),
+                        "volatility_state": btc_analysis.get("volatility_state"),
+                        "alignment": btc_advisor.get("alignment"),
+                        "current_conclusion": btc_advisor.get("current_summary", {}).get("conclusion"),
+                        "suggested_strategies": btc_advisor.get("suggested_settings", {}).get("active_strategies"),
+                        "suggested_risk_profile": btc_advisor.get("suggested_settings", {}).get("risk_profile"),
+                        "suggested_styles": btc_advisor.get("suggested_settings", {}).get("recommended_styles"),
+                        "headline": btc_advisor.get("suggested_settings", {}).get("headline"),
+                    }
+                    snap_copy = dict(scan_run.settings_snapshot or {})
+                    snap_copy["btc_market_mover"] = btc_market_mover_summary
+                    scan_run.settings_snapshot = snap_copy
+                    db.commit()
+                except Exception as exc:
+                    log.debug("Could not compute BTC Market Mover summary: %s", exc)
 
         if not llm_cfg.get("api_key"):
             raise RuntimeError(
@@ -475,6 +504,7 @@ class ScanPipeline:
             "ai_errors": len(ai_errors),
             "setups_created": setups_created,
             "warning": scan_run.error_message,
+            "btc_market_mover": btc_market_mover_summary,
         }
 
 
