@@ -606,7 +606,9 @@ function renderEvalTable() {
       const found = state.evalRows.find((r) => r.is_setup && r.setup_obj.id === sid);
       if (found) {
         document.getElementById("scan-eval-modal").classList.add("hidden");
+        switchMainView("scanner");
         selectSetup(found.setup_obj);
+        document.getElementById("candlestick-chart")?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     });
   });
