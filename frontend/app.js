@@ -2785,9 +2785,19 @@ function renderStrategySettingsUI(activeList = null) {
         } else if (act === "edit" && target) {
           openStrategyForm(target);
         } else if (act === "delete" && target) {
-          await apiRequest(`/api/strategies/${id}`, { method: "DELETE" });
-          showToast(`Strategi ${target.name} dihapus.`);
-          await Promise.all([loadAIModalData(false), loadAnalytics()]);
+          openConfirmDeleteModal({
+            title: "Hapus Strategi",
+            message: `Yakin ingin menghapus strategi ${target.name}? Tindakan ini tidak dapat dibatalkan.`,
+            detailHtml: `
+              <div class="confirm-scan-row"><span class="subtitle-sm">Kode / Nama</span><strong>${escapeHtml(target.name)} &bull; ${escapeHtml(target.display_name || "-")}</strong></div>
+              <div class="confirm-scan-row"><span class="subtitle-sm">Gaya / Timeframe</span><span>${escapeHtml(target.trade_style || "-")} (${escapeHtml(target.suggested_htf || "-")}/${escapeHtml(target.suggested_ltf || "-")})</span></div>
+            `,
+            onConfirm: async () => {
+              await apiRequest(`/api/strategies/${id}`, { method: "DELETE" });
+              showToast(`Strategi ${target.name} dihapus.`);
+              await Promise.all([loadAIModalData(false), loadAnalytics()]);
+            },
+          });
         }
       } catch (err) {
         showToast(err.message, true);
@@ -3154,15 +3164,29 @@ function renderAIModelsTable() {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.id);
       const act = btn.dataset.act;
+      const modelObj = (state.aiModels || []).find((m) => m.id === id);
       try {
         if (act === "activate") {
           const res = await apiRequest(`/api/ai/models/${id}/activate`, { method: "POST" });
           showToast(res.message);
+          await Promise.all([loadAIModalData(false), loadHealthAndStatus()]);
         } else if (act === "delete") {
-          await apiRequest(`/api/ai/models/${id}`, { method: "DELETE" });
-          showToast("Model AI dihapus.");
+          openConfirmDeleteModal({
+            title: "Hapus Model AI",
+            message: `Yakin ingin menghapus model AI ${modelObj ? modelObj.name : `#${id}`}?`,
+            detailHtml: modelObj
+              ? `
+                <div class="confirm-scan-row"><span class="subtitle-sm">Nama Model</span><strong>${escapeHtml(modelObj.name)}</strong></div>
+                <div class="confirm-scan-row"><span class="subtitle-sm">Provider / Model ID</span><code>${escapeHtml(modelObj.provider)} &bull; ${escapeHtml(modelObj.model_id)}</code></div>
+              `
+              : "",
+            onConfirm: async () => {
+              await apiRequest(`/api/ai/models/${id}`, { method: "DELETE" });
+              showToast("Model AI dihapus.");
+              await Promise.all([loadAIModalData(false), loadHealthAndStatus()]);
+            },
+          });
         }
-        await Promise.all([loadAIModalData(false), loadHealthAndStatus()]);
       } catch (err) {
         showToast(err.message, true);
       }
@@ -3883,7 +3907,7 @@ function wireEvents() {
     });
   }
 
-  document.getElementById("btn-run-scan").addEventListener("click", async () => {
+  async function executeRunScan() {
     try {
       hideErrorBanner();
       syncScanButtonsState(true);
@@ -3924,6 +3948,74 @@ function wireEvents() {
       syncScanButtonsState(false);
       showErrorBanner("Gagal Menjalankan Scan", err.message);
       showToast(err.message, true);
+    }
+  }
+
+  function closeConfirmRunScanModal() {
+    document.getElementById("confirm-scan-modal")?.classList.add("hidden");
+  }
+
+  function openConfirmRunScanModal() {
+    const modal = document.getElementById("confirm-scan-modal");
+    if (!modal) {
+      executeRunScan();
+      return;
+    }
+    const llmLabel = document.getElementById("active-llm-label")?.textContent || "-";
+    const activeStrats = (state.strategies || []).filter((s) => s.is_active);
+    const llmEl = document.getElementById("confirm-scan-llm");
+    const stratsEl = document.getElementById("confirm-scan-strategies");
+    const btcRow = document.getElementById("confirm-scan-btc-row");
+    const btcEl = document.getElementById("confirm-scan-btc");
+
+    if (llmEl) llmEl.textContent = llmLabel;
+    if (stratsEl) {
+      stratsEl.innerHTML = activeStrats.length
+        ? activeStrats
+            .map((s) => `<span class="badge badge-open">${escapeHtml(s.name)}</span>`)
+            .join("")
+        : `<span class="badge badge-hit-sl">Tidak ada strategi aktif</span>`;
+    }
+    if (btcRow && btcEl) {
+      if (latestBtcMoverReport && latestBtcMoverReport.btc) {
+        const b = latestBtcMoverReport.btc;
+        const adv = latestBtcMoverReport.advisor || {};
+        const alignBadge = adv.alignment === "SELARAS" ? "badge-hit-tp" : "badge-open";
+        const alignTxt = adv.alignment === "SELARAS" ? "Selaras" : (adv.alignment || "-");
+        btcEl.innerHTML = `<span class="badge ${_btcRegimeBadgeClass(b.overall_regime)}">${escapeHtml(b.overall_regime)} &bull; ${escapeHtml(b.overall_bias)}</span> <span class="badge ${alignBadge}">${escapeHtml(alignTxt)}</span>`;
+        btcRow.classList.remove("hidden");
+      } else {
+        btcRow.classList.add("hidden");
+      }
+    }
+    modal.classList.remove("hidden");
+  }
+
+  document.getElementById("btn-run-scan").addEventListener("click", openConfirmRunScanModal);
+  document.getElementById("btn-close-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
+  document.getElementById("btn-cancel-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
+  document.getElementById("confirm-scan-modal")?.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "confirm-scan-modal") closeConfirmRunScanModal();
+  });
+  document.getElementById("btn-confirm-run-scan")?.addEventListener("click", () => {
+    closeConfirmRunScanModal();
+    executeRunScan();
+  });
+
+  document.getElementById("btn-close-confirm-delete")?.addEventListener("click", closeConfirmDeleteModal);
+  document.getElementById("btn-cancel-confirm-delete")?.addEventListener("click", closeConfirmDeleteModal);
+  document.getElementById("confirm-delete-modal")?.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "confirm-delete-modal") closeConfirmDeleteModal();
+  });
+  document.getElementById("btn-confirm-delete-ok")?.addEventListener("click", async () => {
+    const fn = pendingDeleteAction;
+    closeConfirmDeleteModal();
+    if (typeof fn === "function") {
+      try {
+        await fn();
+      } catch (err) {
+        showToast(err.message, true);
+      }
     }
   });
 
@@ -4154,6 +4246,33 @@ function switchMainView(viewName, updateHash = true) {
 }
 
 let latestBtcMoverReport = null;
+let pendingDeleteAction = null;
+
+function closeConfirmDeleteModal() {
+  pendingDeleteAction = null;
+  document.getElementById("confirm-delete-modal")?.classList.add("hidden");
+}
+
+function openConfirmDeleteModal({ title, message, detailHtml = "", onConfirm }) {
+  const modal = document.getElementById("confirm-delete-modal");
+  if (!modal) return;
+  const titleEl = document.getElementById("confirm-delete-title");
+  const msgEl = document.getElementById("confirm-delete-msg");
+  const detailEl = document.getElementById("confirm-delete-detail");
+  if (titleEl) titleEl.textContent = title || "Konfirmasi Hapus";
+  if (msgEl) msgEl.textContent = message || "Apakah Anda yakin ingin menghapus item ini?";
+  if (detailEl) {
+    if (detailHtml) {
+      detailEl.innerHTML = detailHtml;
+      detailEl.classList.remove("hidden");
+    } else {
+      detailEl.innerHTML = "";
+      detailEl.classList.add("hidden");
+    }
+  }
+  pendingDeleteAction = onConfirm || null;
+  modal.classList.remove("hidden");
+}
 
 function _btcRegimeBadgeClass(regime) {
   if (regime === "TRENDING_UP") return "badge-hit-tp";

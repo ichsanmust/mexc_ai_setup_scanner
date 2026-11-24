@@ -2078,3 +2078,23 @@ code {
   color: #0284c7;
   font-weight: 600;
 }
+
+.confirm-scan-summary {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.confirm-scan-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.confirm-scan-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261124a" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261124b" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -796,7 +796,7 @@
           <div class="models-section">
             <div class="models-header">
               <div>
-                <h3>Kelola Strategi &amp; Prompt Aturan AI (Tabel Database)</h3>
+                <h3>Kelola Strategi &amp; Prompt Aturan AI</h3>
                 <span id="strategies-count" class="subtitle-sm">Menampilkan 0 strategi</span>
               </div>
               <button type="button" id="btn-toggle-add-strategy" class="btn btn-secondary btn-sm">+ Tambah Strategi Baru</button>
@@ -1124,7 +1124,54 @@
     </div>
   </div>
 
+  <div id="confirm-scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-scan-title">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h2 id="confirm-scan-title">Konfirmasi Run Scan</h2>
+        <button type="button" id="btn-close-confirm-scan" class="btn-icon" title="Tutup">&times;</button>
+      </div>
+      <div class="modal-body edit-status-form">
+        <p class="subtitle-sm" style="margin:0;">Pastikan strategi dan model AI berikut sudah sesuai sebelum memindai market MEXC Futures:</p>
+        <div class="confirm-scan-summary">
+          <div class="confirm-scan-row">
+            <span class="subtitle-sm">Model AI Aktif</span>
+            <strong id="confirm-scan-llm">-</strong>
+          </div>
+          <div class="confirm-scan-row">
+            <span class="subtitle-sm">Strategi Aktif</span>
+            <div id="confirm-scan-strategies" class="confirm-scan-chips"></div>
+          </div>
+          <div id="confirm-scan-btc-row" class="confirm-scan-row hidden">
+            <span class="subtitle-sm">BTC Market Mover</span>
+            <span id="confirm-scan-btc">-</span>
+          </div>
+        </div>
+        <div class="edit-status-actions">
+          <button type="button" id="btn-cancel-confirm-scan" class="btn btn-secondary">Batal</button>
+          <button type="button" id="btn-confirm-run-scan" class="btn btn-primary">Ya, Jalankan Scan</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-delete-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h2 id="confirm-delete-title">Konfirmasi Hapus</h2>
+        <button type="button" id="btn-close-confirm-delete" class="btn-icon" title="Tutup">&times;</button>
+      </div>
+      <div class="modal-body edit-status-form">
+        <p id="confirm-delete-msg" style="margin:0; font-size:13.5px;">Apakah Anda yakin ingin menghapus item ini?</p>
+        <div id="confirm-delete-detail" class="confirm-scan-summary hidden"></div>
+        <div class="edit-status-actions">
+          <button type="button" id="btn-cancel-confirm-delete" class="btn btn-secondary">Batal</button>
+          <button type="button" id="btn-confirm-delete-ok" class="btn btn-danger">Ya, Hapus</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261124g"></script>
+  <script src="/static/app.js?v=20261124j"></script>
 </body>
 </html>
