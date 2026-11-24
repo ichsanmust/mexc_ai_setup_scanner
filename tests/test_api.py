@@ -748,6 +748,22 @@ def test_setups_list_sorting_active_filter_counts_and_recent_changes(api_client,
     active_only = api_client.get("/api/setups?status=ACTIVE").json()
     assert {x["symbol"] for x in active_only["items"]} == {"OLD_OPEN_USDT", "NEW_OPEN_USDT"}
 
+    # strategy accepts comma-separated multi-select values
+    multi_strategy = api_client.get(
+        "/api/setups?strategy=TREND_PULLBACK,BREAKOUT_MOMENTUM"
+    ).json()
+    assert {x["symbol"] for x in multi_strategy["items"]} == {
+        "OLD_OPEN_USDT",
+        "NEW_OPEN_USDT",
+        "DONE_TP_USDT",
+    }
+
+    single_strategy = api_client.get("/api/setups?strategy=BREAKOUT_MOMENTUM").json()
+    assert {x["symbol"] for x in single_strategy["items"]} == {"DONE_TP_USDT"}
+
+    unknown_strategy = api_client.get("/api/setups?strategy=NOT_A_STRATEGY").json()
+    assert unknown_strategy["items"] == []
+
 
 def test_analytics_includes_closed_manual_tp_and_cl_in_win_loss_breakdown(api_client, db_session):
     db, _, _ = db_session

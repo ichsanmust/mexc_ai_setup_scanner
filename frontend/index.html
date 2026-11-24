@@ -243,12 +243,21 @@
               </div>
             </div>
             <input id="filter-symbol" type="text" placeholder="Cari pair (BTC_USDT)..." />
-            <select id="filter-strategy">
-              <option value="ALL">Semua Strategi</option>
-              <option value="TREND_PULLBACK">TREND_PULLBACK</option>
-              <option value="BREAKOUT_MOMENTUM">BREAKOUT_MOMENTUM</option>
-              <option value="MEAN_REVERSION_SCALP">MEAN_REVERSION_SCALP</option>
-            </select>
+            <div class="multi-select" id="filter-strategy-wrap">
+              <button type="button" id="btn-filter-strategy" class="multi-select-trigger" aria-haspopup="listbox" aria-expanded="false" title="Pilih satu atau beberapa strategi untuk difilter">
+                <span id="filter-strategy-label" class="multi-select-label">Semua Strategi</span>
+                <span class="multi-select-caret">&#9662;</span>
+              </button>
+              <div id="filter-strategy-menu" class="multi-select-menu hidden" role="listbox" aria-multiselectable="true" aria-label="Filter Strategi">
+                <div class="multi-select-actions">
+                  <button type="button" id="btn-filter-strategy-all" class="btn btn-secondary btn-sm">Pilih Semua</button>
+                  <button type="button" id="btn-filter-strategy-clear" class="btn btn-secondary btn-sm">Reset</button>
+                </div>
+                <div id="filter-strategy-options" class="multi-select-options">
+                  <div class="multi-select-empty subtitle-sm">Memuat strategi...</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

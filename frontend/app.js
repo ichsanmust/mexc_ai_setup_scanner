@@ -161,6 +161,7 @@ const state = {
   runsPageSize: 10,
   runsTotal: 0,
   strategies: [],
+  setupStrategyFilter: [],
   aiModels: [],
   aiSettings: null,
   evalFilter: "ALL",
@@ -1234,8 +1235,8 @@ function renderRecentChangesStrip(changes = []) {
 async function loadSetups() {
   const params = new URLSearchParams();
   if (state.statusFilter !== "ALL") params.set("status", state.statusFilter);
-  const strat = document.getElementById("filter-strategy").value;
-  if (strat !== "ALL") params.set("strategy", strat);
+  const stratFilters = Array.isArray(state.setupStrategyFilter) ? state.setupStrategyFilter : [];
+  if (stratFilters.length) params.set("strategy", stratFilters.join(","));
   const sym = document.getElementById("filter-symbol").value.trim();
   if (sym) params.set("symbol", sym);
   const { startDate: setupsStart, endDate: setupsEnd } = setupsRangePicker.getRange();
@@ -2543,16 +2544,91 @@ function escapeHtml(raw) {
     .replace(/'/g, "&#39;");
 }
 
+function readSetupStrategyFilterFromDom() {
+  const checked = Array.from(
+    document.querySelectorAll('#filter-strategy-options input[name="setup_strategy_filter"]:checked')
+  ).map((cb) => cb.value);
+  state.setupStrategyFilter = checked;
+  return checked;
+}
+
+function updateSetupStrategyFilterLabel() {
+  const labelEl = document.getElementById("filter-strategy-label");
+  if (!labelEl) return;
+  const selected = Array.isArray(state.setupStrategyFilter) ? state.setupStrategyFilter : [];
+  const total = state.strategies.length;
+  if (!selected.length) {
+    labelEl.textContent = "Semua Strategi";
+    return;
+  }
+  if (total && selected.length >= total) {
+    labelEl.textContent = `Semua Strategi (${selected.length})`;
+    return;
+  }
+  if (selected.length === 1) {
+    labelEl.textContent = selected[0];
+    return;
+  }
+  const preview = selected.slice(0, 2).join(", ");
+  labelEl.textContent = selected.length <= 2 ? preview : `${preview} +${selected.length - 2}`;
+}
+
+function closeStrategyFilterMenu() {
+  const menu = document.getElementById("filter-strategy-menu");
+  const btn = document.getElementById("btn-filter-strategy");
+  if (menu) menu.classList.add("hidden");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
 function renderStrategyFilterDropdown() {
-  const select = document.getElementById("filter-strategy");
-  if (!select) return;
-  const prevVal = select.value || "ALL";
+  const wrap = document.getElementById("filter-strategy-options");
+  if (!wrap) return;
+  const prevSelected = new Set(Array.isArray(state.setupStrategyFilter) ? state.setupStrategyFilter : []);
   const names = state.strategies.map((s) => s.name);
-  select.innerHTML =
-    `<option value="ALL">Semua Strategi</option>` +
-    names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
-  if (prevVal === "ALL" || names.includes(prevVal)) {
-    select.value = prevVal;
+  // Keep selection only for strategies that still exist.
+  state.setupStrategyFilter = names.filter((n) => prevSelected.has(n));
+
+  if (!names.length) {
+    wrap.innerHTML = `<div class="multi-select-empty subtitle-sm">Belum ada strategi.</div>`;
+    updateSetupStrategyFilterLabel();
+    return;
+  }
+
+  wrap.innerHTML = names
+    .map(
+      (n) => `
+      <label class="multi-select-option" title="${escapeHtml(n)}">
+        <input type="checkbox" name="setup_strategy_filter" value="${escapeHtml(n)}" ${state.setupStrategyFilter.includes(n) ? "checked" : ""} />
+        <span>${escapeHtml(n)}</span>
+      </label>`
+    )
+    .join("");
+
+  wrap.querySelectorAll('input[name="setup_strategy_filter"]').forEach((cb) => {
+    cb.addEventListener("change", () => {
+      readSetupStrategyFilterFromDom();
+      updateSetupStrategyFilterLabel();
+      state.setupsPage = 1;
+      loadSetups();
+    });
+  });
+
+  updateSetupStrategyFilterLabel();
+}
+
+function setSetupStrategyFilterSelection(names, reload = true) {
+  const valid = new Set(state.strategies.map((s) => s.name));
+  state.setupStrategyFilter = (names || []).filter((n) => valid.has(n));
+  const wrap = document.getElementById("filter-strategy-options");
+  if (wrap) {
+    wrap.querySelectorAll('input[name="setup_strategy_filter"]').forEach((cb) => {
+      cb.checked = state.setupStrategyFilter.includes(cb.value);
+    });
+  }
+  updateSetupStrategyFilterLabel();
+  if (reload) {
+    state.setupsPage = 1;
+    loadSetups();
   }
 }
 
@@ -3280,10 +3356,31 @@ function wireEvents() {
     document.getElementById("status-legend-box").classList.add("hidden");
   });
 
-  document.getElementById("filter-strategy").addEventListener("change", () => {
-    state.setupsPage = 1;
-    loadSetups();
-  });
+  const strategyFilterWrap = document.getElementById("filter-strategy-wrap");
+  const strategyFilterBtn = document.getElementById("btn-filter-strategy");
+  const strategyFilterMenu = document.getElementById("filter-strategy-menu");
+  if (strategyFilterBtn && strategyFilterMenu) {
+    strategyFilterBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = strategyFilterMenu.classList.contains("hidden");
+      strategyFilterMenu.classList.toggle("hidden", !willOpen);
+      strategyFilterBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+    document.getElementById("btn-filter-strategy-all")?.addEventListener("click", () => {
+      setSetupStrategyFilterSelection(state.strategies.map((s) => s.name));
+    });
+    document.getElementById("btn-filter-strategy-clear")?.addEventListener("click", () => {
+      setSetupStrategyFilterSelection([]);
+    });
+    document.addEventListener("click", (e) => {
+      if (strategyFilterWrap && !strategyFilterWrap.contains(e.target)) {
+        closeStrategyFilterMenu();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeStrategyFilterMenu();
+    });
+  }
   document.getElementById("filter-symbol").addEventListener("input", () => {
     clearTimeout(window.__symDebounce);
     window.__symDebounce = setTimeout(() => {

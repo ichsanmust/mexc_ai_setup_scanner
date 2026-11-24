@@ -761,10 +761,14 @@ async def list_setups(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """List persisted trade setups with optional status, strategy, symbol, date/range filters, and sort order."""
+    """List persisted trade setups with optional status, strategy (multi via comma), symbol, date/range filters, and sort order."""
     base_query = db.query(TradeSetup)
     if strategy and strategy != "ALL":
-        base_query = base_query.filter(TradeSetup.strategy_used == strategy)
+        strat_parts = [p.strip() for p in strategy.split(",") if p.strip() and p.strip() != "ALL"]
+        if len(strat_parts) == 1:
+            base_query = base_query.filter(TradeSetup.strategy_used == strat_parts[0])
+        elif strat_parts:
+            base_query = base_query.filter(TradeSetup.strategy_used.in_(strat_parts))
     if decision and decision != "ALL":
         base_query = base_query.filter(TradeSetup.decision == decision)
     if symbol:

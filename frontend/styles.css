@@ -629,6 +629,96 @@ body {
   align-items: center;
 }
 
+/* Multi-select dropdown for Daftar Setup Trading (filter strategi) */
+.multi-select {
+  position: relative;
+}
+.multi-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  max-width: 240px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.25;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.multi-select-trigger:hover {
+  border-color: var(--accent);
+}
+.multi-select-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(24, 119, 242, 0.2);
+}
+.multi-select-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.multi-select-caret {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.multi-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 70;
+  min-width: 240px;
+  max-width: min(320px, calc(100vw - 32px));
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  padding: 8px;
+}
+.multi-select-actions {
+  display: flex;
+  gap: 6px;
+  padding: 2px 2px 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #e4e6eb;
+}
+.multi-select-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.multi-select-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.multi-select-option:hover {
+  background: var(--btn-sec);
+}
+.multi-select-option input[type="checkbox"] {
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.multi-select-empty {
+  padding: 6px;
+}
+
 input[type="text"],
 input[type="password"],
 input[type="number"],
