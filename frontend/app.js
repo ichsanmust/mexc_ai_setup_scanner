@@ -970,7 +970,7 @@ async function loadAnalytics() {
   document.getElementById("kpi-total").textContent = data.total_setups;
   const totalSub = document.getElementById("kpi-total-sub");
   if (totalSub) {
-    totalSub.innerHTML = `Avg R:R: <b>${data.overall_avg_rr.toFixed(2)}x</b> &bull; Expired: <b>${data.total_expired_count ?? 0}</b> &bull; Skip: <b>${data.total_skipped_count ?? 0}</b>`;
+    totalSub.innerHTML = `Avg R:R: <b>${data.overall_avg_rr.toFixed(2)}x</b> &bull; BEP: <b>${data.total_bep_count ?? 0}</b> &bull; Expired: <b>${data.total_expired_count ?? 0}</b> &bull; Skip: <b>${data.total_skipped_count ?? 0}</b>`;
   }
 
   document.getElementById("kpi-open").textContent = data.open_count;
@@ -1067,24 +1067,41 @@ async function loadAnalytics() {
           </td>
           <td>
             <b>${s.open_count}</b>
-            <div class="subtitle-sm">O:${s.open_waiting_count ?? 0} H:${s.entry_hit_active_count ?? 0} E:${s.extended_active_count ?? 0} T:${s.manual_taken_count ?? 0}</div>
+            <div class="subtitle-sm">
+              <span title="O = OPEN (Menunggu harga menyentuh Entry)" style="cursor:help;">O:${s.open_waiting_count ?? 0}</span>
+              <span title="H = ENTRY_HIT (Sudah menyentuh Entry otomatis, sedang menuju TP/SL)" style="cursor:help;">H:${s.entry_hit_active_count ?? 0}</span>
+              <span title="E = EXTENDED (Batas expiry diperpanjang sesuai strategi)" style="cursor:help;">E:${s.extended_active_count ?? 0}</span>
+              <span title="T = MANUAL_TAKEN (Diambil manual &amp; tetap dipantau Tracker)" style="cursor:help;">T:${s.manual_taken_count ?? 0}</span>
+            </div>
           </td>
           <td class="text-green">
             <b>${s.hit_tp_count}</b>
-            <div class="subtitle-sm">HIT:${s.hit_tp_auto_count ?? 0} Cl:${s.closed_manual_tp_count ?? 0}</div>
+            <div class="subtitle-sm">
+              <span title="HIT = HIT_TP (Kena Take Profit otomatis oleh Tracker)" style="cursor:help;">HIT:${s.hit_tp_auto_count ?? 0}</span>
+              <span title="Cl = CLOSED_MANUAL_TP (Ditutup manual dengan Take Profit)" style="cursor:help;">Cl:${s.closed_manual_tp_count ?? 0}</span>
+            </div>
           </td>
           <td class="text-red">
             <b>${s.hit_sl_count}</b>
-            <div class="subtitle-sm">HIT:${s.hit_sl_auto_count ?? 0} Cl:${s.closed_manual_cl_count ?? 0}</div>
+            <div class="subtitle-sm">
+              <span title="HIT = HIT_SL (Kena Stop Loss otomatis oleh Tracker)" style="cursor:help;">HIT:${s.hit_sl_auto_count ?? 0}</span>
+              <span title="Cl = CLOSED_MANUAL_CL (Ditutup manual dengan Cut Loss)" style="cursor:help;">Cl:${s.closed_manual_cl_count ?? 0}</span>
+            </div>
           </td>
           <td>
-            <span class="badge badge-expired" title="SL sebelum menyentuh Limit Entry">SL: ${s.sl_no_entry_count ?? 0}</span>
-            <span class="badge badge-missed-tp" title="TP duluan tanpa menyentuh Limit Entry">TP: ${s.tp_no_entry_count ?? 0}</span>
+            <span class="badge badge-expired" title="SL No Entry = Harga langsung jebol Stop Loss sebelum menyentuh Limit Entry">SL: ${s.sl_no_entry_count ?? 0}</span>
+            <span class="badge badge-missed-tp" title="TP No Entry = Harga sudah tembus Take Profit duluan tanpa menyentuh Limit Entry">TP: ${s.tp_no_entry_count ?? 0}</span>
           </td>
-          <td>${s.expired_count} / ${s.manual_skipped_count}</td>
           <td>
-            <b>${s.win_rate_pct}%</b> <small class="subtitle-sm">(${s.hit_tp_count}/${s.decided_count})</small>
-            <div class="subtitle-sm">R:R <b>${Number(s.avg_rr).toFixed(2)}x</b></div>
+            <span class="badge badge-bep" title="BEP = Break-Even Point (Kena SL-BEP, 0 Loss, tidak masuk hitungan Win Rate)" style="cursor:help;">BEP: ${s.bep_count ?? 0}</span>
+            <div class="subtitle-sm">
+              <span title="Exp = EXPIRED (Melewati batas waktu Expiry tanpa menyentuh TP/SL)" style="cursor:help;">Exp: ${s.expired_count}</span> &bull;
+              <span title="Skip = MANUAL_SKIPPED (Ditandai manual untuk dilewati)" style="cursor:help;">Skip: ${s.manual_skipped_count}</span>
+            </div>
+          </td>
+          <td>
+            <b>${s.win_rate_pct}%</b> <small class="subtitle-sm" title="Jumlah Win (${s.hit_tp_count}) dari total trade selesai yang Sudah Entry (${s.decided_count} = Win + Loss)" style="cursor:help;">(${s.hit_tp_count}/${s.decided_count})</small>
+            <div class="subtitle-sm" title="Rata-rata Risk-to-Reward Ratio dari seluruh setup strategi ini" style="cursor:help;">R:R <b>${Number(s.avg_rr).toFixed(2)}x</b></div>
           </td>
         </tr>`
       )
@@ -1100,6 +1117,7 @@ async function loadAnalytics() {
       datasets: [
         { label: "Win (TP + Closed TP)", data: data.strategies.map((s) => s.hit_tp_count), backgroundColor: "#16a34a" },
         { label: "Loss (SL + Closed CL)", data: data.strategies.map((s) => s.hit_sl_count), backgroundColor: "#e41e3f" },
+        { label: "BEP (Break-Even)", data: data.strategies.map((s) => s.bep_count ?? 0), backgroundColor: "#0ea5e9" },
         { label: "Aktif", data: data.strategies.map((s) => s.open_count), backgroundColor: "#1877f2" },
         { label: "No Entry (SL/TP)", data: data.strategies.map((s) => (s.sl_no_entry_count ?? 0) + (s.tp_no_entry_count ?? 0)), backgroundColor: "#f97316" },
         { label: "Expired", data: data.strategies.map((s) => s.expired_count), backgroundColor: "#eab308" },

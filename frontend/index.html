@@ -123,7 +123,7 @@
         <div class="card kpi-card" title="Total setup yang dibuat AI beserta rata-rata Risk:Reward dan jumlah Expired/Skipped.">
           <span class="kpi-label">Total Setup AI</span>
           <strong id="kpi-total" class="kpi-value">0</strong>
-          <small id="kpi-total-sub" class="kpi-sub">Avg R:R: <b id="kpi-rr">0.00</b>x &bull; Exp: 0 &bull; Skip: 0</small>
+          <small id="kpi-total-sub" class="kpi-sub">Avg R:R: <b id="kpi-rr">0.00</b>x &bull; BEP: 0 &bull; Exp: 0 &bull; Skip: 0</small>
         </div>
       </section>
 
@@ -170,7 +170,7 @@
                 <th>Win (TP)</th>
                 <th>Loss (SL)</th>
                 <th>No Entry (SL / TP)</th>
-                <th>Expired / Skip</th>
+                <th>BEP / Exp / Skip</th>
                 <th>Win Rate &amp; Avg R:R</th>
               </tr>
             </thead>
@@ -184,6 +184,7 @@
         (1) <b>Setup Aktif</b> menjumlahkan <code>OPEN</code> (menunggu entry), <code>ENTRY_HIT</code> (sudah entry otomatis), <code>EXTENDED</code> (expiry diperpanjang), dan <code>MANUAL_TAKEN</code> (diambil manual).
         (2) <b>Win Rate</b> menghitung semua posisi yang benar-benar <b>Sudah Entry</b>: Win = <code>HIT_TP</code> + <code>CLOSED_TP</code>, Loss = <code>HIT_SL</code> + <code>CLOSED_CL</code>.
         (3) <b>SL No Entry</b> &amp; <b>TP No Entry</b> dipisahkan agar akurasi eksekusi tidak bias.
+        (4) <b>BEP</b> (<i>Break-Even Point</i>) ditampilkan terpisah sebagai posisi impas (tidak dihitung Win maupun Loss pada Win Rate).
       </div>
     </div>
 
@@ -1124,6 +1125,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261124e"></script>
+  <script src="/static/app.js?v=20261124g"></script>
 </body>
 </html>
