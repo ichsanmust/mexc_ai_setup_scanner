@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import logging
 import math
+import time
 from typing import Any, Optional
 
 import httpx
@@ -21,7 +22,7 @@ from ..ai.analyzer import (
 from ..config import settings
 from ..database import SessionLocal
 from ..models import ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
-from ..scanner.features import prefilter_and_build_snapshot, summarize_timeframe
+from ..scanner.features import prefilter_and_build_snapshot, prescreen_for_strategy, summarize_timeframe
 from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
 from .market_mover import analyze_btc_market_mover, build_btc_strategy_advisor
 from .runtime_settings import resolve_runtime_settings
@@ -150,6 +151,7 @@ class ScanPipeline:
                 "max_atr_pct": rt_cfg["max_atr_pct"],
                 "min_confidence": rt_cfg["min_confidence"],
                 "risk_profile": rt_cfg["risk_profile"],
+                "prescreen_enabled": bool(settings.prescreen_enabled),
                 "mexc_base_url": rt_cfg["mexc_base_url"],
                 "llm_provider": llm_cfg["provider"],
                 "llm_model": llm_cfg["model_id"],
@@ -211,6 +213,8 @@ class ScanPipeline:
                 return summary
             except Exception as exc:
                 log.exception("Scan cycle #%s failed: %s", scan_run.id, exc)
+                db.rollback()
+                scan_run = db.get(ScanRun, scan_run.id) or scan_run
                 scan_run.status = "FAILED"
                 scan_run.error_message = str(exc)[:2000]
                 scan_run.finished_at = utcnow()
@@ -237,6 +241,23 @@ class ScanPipeline:
         rt_cfg: dict[str, Any],
         strategy_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Run one scan cycle as a streaming pipeline.
+
+        Producers fetch klines and run prefilter + deterministic prescreen per pair; every
+        surviving (snapshot, strategy) task is pushed to an asyncio.Queue immediately, and
+        `llm_max_concurrency` AI workers consume it without waiting for the remaining pairs.
+        """
+        cycle_start = time.perf_counter()
+        timings: dict[str, float] = {}
+        warnings: list[str] = []
+
+        if not llm_cfg.get("api_key"):
+            raise RuntimeError(
+                f"LLM API key untuk provider '{llm_cfg['provider']}' kosong. Silakan atur di AI Models & Settings."
+            )
+        if not strategies:
+            raise RuntimeError("Tidak ada strategi aktif. Aktifkan minimal 1 strategi di menu Settings.")
+
         profiles = strategy_profiles or _resolve_strategy_profiles(db, strategies)
 
         # Deduplicate required kline intervals (with max needed kline_limit) across active strategies
@@ -249,17 +270,30 @@ class ScanPipeline:
             }
             for iv in (prof["htf"], prof["ltf"]):
                 interval_limits[iv] = max(interval_limits.get(iv, 0), int(prof["kline_limit"]))
+        unique_intervals = list(interval_limits.items())
 
+        invalid_custom: list[dict[str, str]] = []
         async with MexcPublicClient(
             base_url=rt_cfg["mexc_base_url"],
             proxy_url=rt_cfg["mexc_proxy_url"],
             max_concurrency=rt_cfg["mexc_max_concurrency"],
         ) as mexc:
+            # ---- Stage 1: pair selection (TOP_N by volume, or CUSTOM manual list) ----
+            t = time.perf_counter()
             if rt_cfg.get("pair_selection_mode") == "CUSTOM":
                 selected_syms = rt_cfg.get("selected_pairs") or []
                 if not selected_syms:
                     raise ValueError("Mode Custom Pairs aktif, tetapi belum ada pair yang dipilih di Settings.")
-                total_contracts, top_pairs = await mexc.get_selected_pairs(selected_syms)
+                total_contracts, top_pairs, invalid_custom = await mexc.get_selected_pairs(selected_syms)
+                if invalid_custom:
+                    names = ", ".join(i["symbol"] for i in invalid_custom)
+                    warnings.append(f"Pair custom dilewati (tidak valid/tidak aktif): {names}")
+                    log.warning("Custom pairs skipped on scan #%s: %s", scan_run.id, invalid_custom)
+                if not top_pairs:
+                    raise ValueError(
+                        "Semua pair custom tidak valid atau tidak aktif di MEXC: "
+                        + ", ".join(i["symbol"] for i in invalid_custom)
+                    )
             else:
                 get_top_kwargs: dict[str, Any] = {
                     "top_n": top_n,
@@ -268,73 +302,34 @@ class ScanPipeline:
                 if "max_quote_volume" in inspect.signature(mexc.get_top_pairs).parameters:
                     get_top_kwargs["max_quote_volume"] = rt_cfg["max_24h_quote_volume"]
                 total_contracts, top_pairs = await mexc.get_top_pairs(**get_top_kwargs)
+            timings["fetch_pairs_s"] = round(time.perf_counter() - t, 3)
+
             scan_run.total_contracts = total_contracts
             scan_run.top_pairs_count = len(top_pairs)
             db.commit()
 
-            # Fetch unique interval klines concurrently per pair (zero duplicate MEXC requests)
-            unique_intervals = list(interval_limits.items())
-            total_pairs_n = len(top_pairs)
-            kline_done = 0
-            self._set_progress(
-                scan_run.id,
-                stage="FETCH_KLINES",
-                stage_label="Mengambil data candlestick (kline)",
-                percent=10,
-                detail=f"0/{total_pairs_n} pair",
-                done=0,
-                total=total_pairs_n,
-            )
-
-            async def fetch_pair_candles(pair: dict[str, Any]) -> dict[str, Any]:
-                nonlocal kline_done
-                sym = pair["symbol"]
-                fetched = await asyncio.gather(
-                    *(mexc.get_kline(sym, interval=iv, limit=lim) for iv, lim in unique_intervals)
-                )
-                candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, fetched)}
-                kline_done += 1
-                pct = 10 + int((kline_done / max(1, total_pairs_n)) * 20)
-                self._set_progress(
-                    scan_run.id,
-                    stage="FETCH_KLINES",
-                    stage_label="Mengambil data candlestick (kline)",
-                    percent=pct,
-                    detail=f"{kline_done}/{total_pairs_n} pair ({sym})",
-                    done=kline_done,
-                    total=total_pairs_n,
-                    current_symbol=sym,
-                )
-                return {**pair, "candles_by_iv": candles_by_iv}
-
-            pair_results = await asyncio.gather(
-                *(fetch_pair_candles(p) for p in top_pairs),
-                return_exceptions=True,
-            )
-
-            # Ensure BTC_USDT candles are available for global market_context (reuse if already in top_pairs)
+            # ---- Stage 2: BTC_USDT market context (fetched once, reused if BTC is also in top pairs) ----
+            t = time.perf_counter()
             btc_candles_by_iv: dict[str, list[dict[str, Any]]] = {}
             btc_ticker: dict[str, Any] | None = None
-            for item in pair_results:
-                if not isinstance(item, Exception) and item.get("symbol") == "BTC_USDT":
-                    btc_candles_by_iv = item.get("candles_by_iv") or {}
-                    btc_ticker = item.get("ticker")
+            for pair in top_pairs:
+                if pair.get("symbol") == "BTC_USDT":
+                    btc_ticker = pair.get("ticker")
                     break
-            if not btc_candles_by_iv and top_pairs:
-                self._set_progress(
-                    scan_run.id,
-                    stage="BTC_CONTEXT",
-                    stage_label="Menganalisis konteks BTC_USDT",
-                    percent=32,
-                    detail="Membaca struktur HTF/LTF BTC_USDT...",
+            self._set_progress(
+                scan_run.id,
+                stage="BTC_CONTEXT",
+                stage_label="Menganalisis konteks BTC_USDT",
+                percent=10,
+                detail="Membaca struktur HTF/LTF BTC_USDT...",
+            )
+            try:
+                btc_fetched = await asyncio.gather(
+                    *(mexc.get_kline("BTC_USDT", interval=iv, limit=lim) for iv, lim in unique_intervals)
                 )
-                try:
-                    btc_fetched = await asyncio.gather(
-                        *(mexc.get_kline("BTC_USDT", interval=iv, limit=lim) for iv, lim in unique_intervals)
-                    )
-                    btc_candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, btc_fetched)}
-                except Exception as exc:
-                    log.debug("Could not fetch BTC_USDT context klines: %s", exc)
+                btc_candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, btc_fetched)}
+            except Exception as exc:
+                log.debug("Could not fetch BTC_USDT context klines: %s", exc)
 
             btc_market_mover_summary: dict[str, Any] | None = None
             if btc_candles_by_iv:
@@ -355,116 +350,45 @@ class ScanPipeline:
                         "suggested_styles": btc_advisor.get("suggested_settings", {}).get("recommended_styles"),
                         "headline": btc_advisor.get("suggested_settings", {}).get("headline"),
                     }
-                    snap_copy = dict(scan_run.settings_snapshot or {})
-                    snap_copy["btc_market_mover"] = btc_market_mover_summary
-                    scan_run.settings_snapshot = snap_copy
-                    db.commit()
                 except Exception as exc:
                     log.debug("Could not compute BTC Market Mover summary: %s", exc)
+            timings["btc_context_s"] = round(time.perf_counter() - t, 3)
 
-        if not llm_cfg.get("api_key"):
-            raise RuntimeError(
-                f"LLM API key untuk provider '{llm_cfg['provider']}' kosong. Silakan atur di AI Models & Settings."
+            # ---- Stage 3: streaming fetch -> prefilter -> prescreen -> AI ----
+            total_pairs_n = len(top_pairs)
+            queue: asyncio.Queue[Optional[tuple[dict[str, Any], str]]] = asyncio.Queue()
+            prompt_map = load_strategy_prompts_map(db, strategies)
+            prompt_versions = {
+                k: hashlib.sha256(f"{v}\n::{ANALYZER_PROMPT_VERSION}".encode("utf-8")).hexdigest()[:8]
+                for k, v in prompt_map.items()
+            }
+            ai_params = inspect.signature(analyze_market_snapshot).parameters
+            accepts_system_prompt = "system_prompt" in ai_params
+            accepts_max_tokens = "max_tokens" in ai_params
+            accepts_min_conf = "min_confidence" in ai_params
+            accepts_risk_profile = "risk_profile" in ai_params
+
+            kline_done = 0
+            enqueued = 0
+            ai_done = 0
+            prefilter_cpu_s = 0.0
+            prescreen_skipped = 0
+            passed_symbols: set[str] = set()
+            snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
+            btc_context_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
+            ai_results: list[tuple[dict[str, Any], str, Any, Any, Optional[Exception]]] = []
+            self._set_progress(
+                scan_run.id,
+                stage="FETCH_KLINES",
+                stage_label="Fetch klines, pre-filter & prescreen (streaming ke AI)",
+                percent=12,
+                detail=f"0/{total_pairs_n} pair",
+                done=0,
+                total=total_pairs_n,
             )
-        if not strategies:
-            raise RuntimeError(
-                "Tidak ada strategi aktif. Aktifkan minimal 1 strategi di menu Settings."
-            )
 
-        # Build & cache multi-timeframe snapshots per (symbol, htf, ltf)
-        self._set_progress(
-            scan_run.id,
-            stage="PREFILTER",
-            stage_label="Pre-filter indikator & ATR",
-            percent=38,
-            detail=f"Memfilter {len(top_pairs)} pair terhadap batas ATR%...",
-            done=0,
-            total=len(top_pairs),
-        )
-        snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
-        btc_context_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
-        passed_symbols: set[str] = set()
-        ai_tasks: list[tuple[dict[str, Any], str]] = []
-
-        for item in pair_results:
-            if isinstance(item, Exception):
-                log.warning("Failed fetching kline pair: %s", item)
-                continue
-            sym = item["symbol"]
-            candles_by_iv = item["candles_by_iv"]
-            for strat in strategies:
-                prof = profiles[strat]
-                tf_key = (prof["htf"], prof["ltf"])
-                if tf_key not in btc_context_cache:
-                    btc_htf = _summarize_btc_tf(btc_candles_by_iv.get(prof["htf"], []), prof["htf"])
-                    btc_ltf = _summarize_btc_tf(btc_candles_by_iv.get(prof["ltf"], []), prof["ltf"])
-                    btc_context_cache[tf_key] = (
-                        {"btc": {"htf": btc_htf, "ltf": btc_ltf}} if (btc_htf or btc_ltf) else None
-                    )
-                cache_key = (sym, prof["htf"], prof["ltf"])
-                if cache_key not in snapshot_cache:
-                    eff_min_atr, eff_max_atr = _scale_atr_bounds(
-                        rt_cfg["min_atr_pct"], rt_cfg["max_atr_pct"], prof["ltf"]
-                    )
-                    ok, reason, snap = prefilter_and_build_snapshot(
-                        symbol=sym,
-                        ticker=item["ticker"],
-                        htf_candles=candles_by_iv[prof["htf"]],
-                        ltf_candles=candles_by_iv[prof["ltf"]],
-                        min_atr_pct=eff_min_atr,
-                        max_atr_pct=eff_max_atr,
-                        htf_interval=prof["htf"],
-                        ltf_interval=prof["ltf"],
-                        contract=item.get("contract"),
-                        market_context=btc_context_cache[tf_key],
-                    )
-                    snapshot_cache[cache_key] = (ok, reason, snap)
-                    if not ok:
-                        db.add(
-                            ScanEvaluation(
-                                scan_run_id=scan_run.id,
-                                symbol=sym,
-                                strategy_used="PREFILTER",
-                                raw_decision="SKIPPED",
-                                rejection_reason=f"[{prof['htf']}/{prof['ltf']}] {reason}"[:255],
-                                confidence=None,
-                            )
-                        )
-                ok, _, snap = snapshot_cache[cache_key]
-                if ok and snap is not None:
-                    passed_symbols.add(sym)
-                    ai_tasks.append((snap, strat))
-
-        scan_run.prefiltered_count = len(passed_symbols)
-        db.commit()
-
-        prompt_map = load_strategy_prompts_map(db, strategies)
-        prompt_versions = {
-            k: hashlib.sha256(f"{v}\n::{ANALYZER_PROMPT_VERSION}".encode("utf-8")).hexdigest()[:8]
-            for k, v in prompt_map.items()
-        }
-        ai_params = inspect.signature(analyze_market_snapshot).parameters
-        accepts_system_prompt = "system_prompt" in ai_params
-        accepts_max_tokens = "max_tokens" in ai_params
-        accepts_min_conf = "min_confidence" in ai_params
-        accepts_risk_profile = "risk_profile" in ai_params
-
-        llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
-        total_ai_tasks = len(ai_tasks)
-        ai_done = 0
-        self._set_progress(
-            scan_run.id,
-            stage="AI_ANALYSIS",
-            stage_label="Analisis setup oleh AI",
-            percent=45,
-            detail=f"0/{total_ai_tasks} evaluasi AI" if total_ai_tasks else "Tidak ada pair lolos pre-filter",
-            done=0,
-            total=total_ai_tasks,
-        )
-
-        async def run_one_ai(snap: dict[str, Any], strat: str):
-            nonlocal ai_done
-            async with llm_sem:
+            async def run_one_ai(snap: dict[str, Any], strat: str) -> None:
+                nonlocal ai_done
                 try:
                     kwargs: dict[str, Any] = {
                         "snapshot": snap,
@@ -481,25 +405,153 @@ class ScanPipeline:
                     if accepts_system_prompt:
                         kwargs["system_prompt"] = prompt_map.get(strat.strip().upper())
                     decision, raw_resp = await analyze_market_snapshot(**kwargs)
-                    return snap, strat, decision, raw_resp, None
+                    ai_results.append((snap, strat, decision, raw_resp, None))
                 except Exception as exc:
-                    return snap, strat, None, None, exc
+                    ai_results.append((snap, strat, None, None, exc))
                 finally:
                     ai_done += 1
-                    pct = 45 + int((ai_done / max(1, total_ai_tasks)) * 47)
+                    pct = 50 + int((ai_done / max(1, enqueued)) * 42) if enqueued else 50
                     self._set_progress(
                         scan_run.id,
                         stage="AI_ANALYSIS",
                         stage_label="Analisis setup oleh AI",
-                        percent=pct,
-                        detail=f"{ai_done}/{total_ai_tasks} selesai ({snap['symbol']} • {strat})",
+                        percent=min(92, pct),
+                        detail=f"{ai_done}/{enqueued} selesai ({snap['symbol']} • {strat})",
                         done=ai_done,
-                        total=total_ai_tasks,
+                        total=enqueued,
                         current_symbol=snap["symbol"],
                     )
 
-        ai_results = await asyncio.gather(*(run_one_ai(s, st) for s, st in ai_tasks))
+            async def ai_worker() -> None:
+                while True:
+                    item = await queue.get()
+                    try:
+                        if item is None:
+                            return
+                        await run_one_ai(*item)
+                    finally:
+                        queue.task_done()
 
+            async def fetch_and_screen_pair(pair: dict[str, Any]) -> None:
+                nonlocal kline_done, enqueued, prefilter_cpu_s, prescreen_skipped
+                sym = pair["symbol"]
+                try:
+                    if sym == "BTC_USDT" and btc_candles_by_iv:
+                        candles_by_iv = btc_candles_by_iv
+                    else:
+                        fetched = await asyncio.gather(
+                            *(mexc.get_kline(sym, interval=iv, limit=lim) for iv, lim in unique_intervals)
+                        )
+                        candles_by_iv = {iv: c for (iv, _), c in zip(unique_intervals, fetched)}
+                except Exception as exc:
+                    log.warning("Failed fetching kline pair %s: %s", sym, exc)
+                    kline_done += 1
+                    return
+
+                kline_done += 1
+                self._set_progress(
+                    scan_run.id,
+                    stage="FETCH_KLINES",
+                    stage_label="Fetch klines, pre-filter & prescreen (streaming ke AI)",
+                    percent=12 + int((kline_done / max(1, total_pairs_n)) * 30),
+                    detail=f"{kline_done}/{total_pairs_n} pair ({sym}) • antre AI: {enqueued}",
+                    done=kline_done,
+                    total=total_pairs_n,
+                    current_symbol=sym,
+                )
+
+                t0 = time.perf_counter()
+                for strat in strategies:
+                    prof = profiles[strat]
+                    tf_key = (prof["htf"], prof["ltf"])
+                    if tf_key not in btc_context_cache:
+                        btc_htf = _summarize_btc_tf(btc_candles_by_iv.get(prof["htf"], []), prof["htf"])
+                        btc_ltf = _summarize_btc_tf(btc_candles_by_iv.get(prof["ltf"], []), prof["ltf"])
+                        btc_context_cache[tf_key] = (
+                            {"btc": {"htf": btc_htf, "ltf": btc_ltf}} if (btc_htf or btc_ltf) else None
+                        )
+                    cache_key = (sym, prof["htf"], prof["ltf"])
+                    if cache_key not in snapshot_cache:
+                        eff_min_atr, eff_max_atr = _scale_atr_bounds(
+                            rt_cfg["min_atr_pct"], rt_cfg["max_atr_pct"], prof["ltf"]
+                        )
+                        ok, reason, snap = prefilter_and_build_snapshot(
+                            symbol=sym,
+                            ticker=pair["ticker"],
+                            htf_candles=candles_by_iv.get(prof["htf"], []),
+                            ltf_candles=candles_by_iv.get(prof["ltf"], []),
+                            min_atr_pct=eff_min_atr,
+                            max_atr_pct=eff_max_atr,
+                            htf_interval=prof["htf"],
+                            ltf_interval=prof["ltf"],
+                            contract=pair.get("contract"),
+                            market_context=btc_context_cache[tf_key],
+                        )
+                        snapshot_cache[cache_key] = (ok, reason, snap)
+                        if not ok:
+                            db.add(
+                                ScanEvaluation(
+                                    scan_run_id=scan_run.id,
+                                    symbol=sym,
+                                    strategy_used="PREFILTER",
+                                    raw_decision="SKIPPED",
+                                    rejection_reason=f"[{prof['htf']}/{prof['ltf']}] {reason}"[:255],
+                                    confidence=None,
+                                )
+                            )
+                    ok, _, snap = snapshot_cache[cache_key]
+                    if not ok or snap is None:
+                        continue
+                    passed_symbols.add(sym)
+
+                    if settings.prescreen_enabled:
+                        pass_ps, ps_reason = prescreen_for_strategy(
+                            strat, snap["htf_1h"], snap["ltf_15m"], rt_cfg["risk_profile"]
+                        )
+                        if not pass_ps:
+                            prescreen_skipped += 1
+                            db.add(
+                                ScanEvaluation(
+                                    scan_run_id=scan_run.id,
+                                    symbol=sym,
+                                    strategy_used=strat,
+                                    raw_decision="SKIPPED",
+                                    rejection_reason=f"[PRESCREEN] {ps_reason}"[:255],
+                                    confidence=None,
+                                )
+                            )
+                            continue
+
+                    enqueued += 1
+                    queue.put_nowait((snap, strat))
+                prefilter_cpu_s += time.perf_counter() - t0
+
+            n_workers = max(1, int(rt_cfg["llm_max_concurrency"]))
+            t_stream = time.perf_counter()
+            workers = [asyncio.create_task(ai_worker()) for _ in range(n_workers)]
+            producer_results = await asyncio.gather(
+                *(fetch_and_screen_pair(p) for p in top_pairs),
+                return_exceptions=True,
+            )
+            for res in producer_results:
+                if isinstance(res, Exception):
+                    log.warning("Pair producer error: %s", res)
+            t_producers_done = time.perf_counter()
+            timings["fetch_prefilter_s"] = round(t_producers_done - t_stream, 3)
+
+            for _ in workers:
+                queue.put_nowait(None)
+            await asyncio.gather(*workers)
+            # Time AI kept running after the last pair was fetched (the non-overlapped tail)
+            timings["ai_tail_s"] = round(time.perf_counter() - t_producers_done, 3)
+            timings["stream_total_s"] = round(time.perf_counter() - t_stream, 3)
+            timings["prefilter_cpu_s"] = round(prefilter_cpu_s, 3)
+            timings["ai_workers"] = n_workers
+
+        if enqueued == 0 and not passed_symbols:
+            log.info("Scan #%s: no pair passed prefilter", scan_run.id)
+
+        # ---- Stage 4: validation & persistence ----
         self._set_progress(
             scan_run.id,
             stage="SAVING",
@@ -507,6 +559,7 @@ class ScanPipeline:
             percent=95,
             detail=f"Memvalidasi {len(ai_results)} hasil evaluasi AI...",
         )
+        t_save = time.perf_counter()
 
         ai_analyzed_count = 0
         setups_created = 0
@@ -596,12 +649,23 @@ class ScanPipeline:
             db.flush()
             setups_created += 1
 
+        timings["save_s"] = round(time.perf_counter() - t_save, 3)
+        timings["total_s"] = round(time.perf_counter() - cycle_start, 3)
+        log.info("Scan #%s stage timings: %s", scan_run.id, timings)
+
         scan_run.ai_analyzed_count = ai_analyzed_count
         scan_run.setups_created_count = setups_created
-        if ai_tasks and ai_analyzed_count == 0 and ai_errors:
-            raise RuntimeError(f"Semua panggilan AI gagal ({len(ai_errors)}/{len(ai_tasks)}). Contoh: {ai_errors[0]}")
+        if enqueued and ai_analyzed_count == 0 and ai_errors:
+            raise RuntimeError(f"Semua panggilan AI gagal ({len(ai_errors)}/{enqueued}). Contoh: {ai_errors[0]}")
         if ai_errors:
-            scan_run.error_message = f"Sebagian AI gagal ({len(ai_errors)}/{len(ai_tasks)}): {ai_errors[0]}"[:2000]
+            warnings.append(f"Sebagian AI gagal ({len(ai_errors)}/{enqueued}): {ai_errors[0]}")
+        scan_run.error_message = " | ".join(warnings)[:2000] if warnings else None
+
+        snap_copy = dict(scan_run.settings_snapshot or {})
+        snap_copy["stage_timings"] = timings
+        snap_copy["prescreen_skipped"] = prescreen_skipped
+        snap_copy["invalid_custom_pairs"] = invalid_custom
+        scan_run.settings_snapshot = snap_copy
         db.commit()
 
         return {
@@ -612,9 +676,12 @@ class ScanPipeline:
             "total_contracts": total_contracts,
             "top_pairs": len(top_pairs),
             "prefiltered_pairs": len(passed_symbols),
+            "prescreen_skipped": prescreen_skipped,
             "ai_analyzed": ai_analyzed_count,
             "ai_errors": len(ai_errors),
             "setups_created": setups_created,
+            "invalid_custom_pairs": [i["symbol"] for i in invalid_custom],
+            "stage_timings": timings,
             "warning": scan_run.error_message,
             "btc_market_mover": btc_market_mover_summary,
         }

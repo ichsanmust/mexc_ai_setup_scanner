@@ -154,14 +154,21 @@ class MexcPublicClient:
         merged.sort(key=lambda x: x["amount24"], reverse=True)
         return len(contracts), merged[:limit_n]
 
-    async def get_selected_pairs(self, symbols: list[str]) -> tuple[int, list[dict[str, Any]]]:
-        """Return (total_active_contracts, pair_dicts_for_explicit_symbols) preserving order."""
+    async def get_selected_pairs(
+        self, symbols: list[str]
+    ) -> tuple[int, list[dict[str, Any]], list[dict[str, str]]]:
+        """Return (total_active_contracts, valid_pair_dicts, invalid_entries) preserving input order.
+
+        invalid_entries lists every requested symbol that is not tradable on MEXC right now
+        (unknown, delisted/not-active, no ticker, or non-positive price), with a reason.
+        """
         contracts, tickers = await asyncio.gather(
             self.get_active_usdt_contracts(),
             self.get_all_tickers(),
         )
         contract_map = {c["symbol"]: c for c in contracts if c.get("symbol")}
         selected: list[dict[str, Any]] = []
+        invalid: list[dict[str, str]] = []
         seen: set[str] = set()
         for raw_sym in symbols:
             sym = str(raw_sym or "").strip().upper()
@@ -170,14 +177,19 @@ class MexcPublicClient:
             seen.add(sym)
             contract = contract_map.get(sym)
             ticker = tickers.get(sym)
-            if not contract or not ticker:
+            if not contract:
+                invalid.append({"symbol": sym, "reason": "Tidak ditemukan / tidak aktif di MEXC Futures"})
+                continue
+            if not ticker:
+                invalid.append({"symbol": sym, "reason": "Ticker tidak tersedia"})
                 continue
             last_price = float(ticker.get("lastPrice") or 0.0)
             if last_price <= 0:
+                invalid.append({"symbol": sym, "reason": "Harga terakhir tidak valid (<= 0)"})
                 continue
             amount_24 = float(ticker.get("amount24") or 0.0)
             selected.append({"symbol": sym, "contract": contract, "ticker": ticker, "amount24": amount_24})
-        return len(contracts), selected
+        return len(contracts), selected, invalid
 
     async def get_kline(
         self,

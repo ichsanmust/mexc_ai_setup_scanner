@@ -211,3 +211,25 @@ def test_snapshot_includes_structure_dss_cross_and_oi_normalization():
     assert "swing_05atr" in lc["long"]["sl_candidates"]
     assert "htf_res" in lc["long"]["tp_candidates"]
     assert "rr_from_market_vs_swing_05atr" in lc["short"]
+
+
+def test_prescreen_for_strategy_rules():
+    from app.scanner.features import prescreen_for_strategy
+
+    flat = {"ema_bias": "FLAT_RANGING"}
+    trend = {"ema_bias": "BULLISH_ALIGNED"}
+    low_vol = {"volume_ratio": 0.9}
+    mid_vol = {"volume_ratio": 1.0}
+    hot_vol = {"volume_ratio": 2.0}
+
+    assert prescreen_for_strategy("TREND_PULLBACK", flat, low_vol)[0] is False
+    assert prescreen_for_strategy("TREND_PULLBACK", trend, low_vol)[0] is True
+
+    assert prescreen_for_strategy("BREAKOUT_MOMENTUM", trend, mid_vol)[0] is False
+    assert prescreen_for_strategy("BREAKOUT_MOMENTUM", trend, mid_vol, "MODERATE")[0] is True
+    assert prescreen_for_strategy("BREAKOUT_MOMENTUM", trend, low_vol, "AGGRESSIVE")[0] is True
+    assert prescreen_for_strategy("BREAKOUT_MOMENTUM", trend, hot_vol)[0] is True
+
+    assert prescreen_for_strategy("MEAN_REVERSION_SCALP", trend, hot_vol)[0] is False
+    assert prescreen_for_strategy("MEAN_REVERSION_SCALP", trend, mid_vol)[0] is True
+    assert prescreen_for_strategy("UNKNOWN_CUSTOM", flat, low_vol)[0] is True

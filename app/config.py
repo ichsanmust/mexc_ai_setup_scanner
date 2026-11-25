@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     max_atr_pct: float = 8.0
     min_confidence: int = 75
     risk_profile: str = "CONSERVATIVE"
+    prescreen_enabled: bool = True
 
     # Web Server
     app_host: str = "0.0.0.0"

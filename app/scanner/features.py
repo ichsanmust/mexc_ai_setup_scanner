@@ -365,6 +365,36 @@ def _build_level_candidates(
     }
 
 
+def prescreen_for_strategy(
+    strategy: str,
+    htf_summary: dict[str, Any],
+    ltf_summary: dict[str, Any],
+    risk_profile: str = "CONSERVATIVE",
+) -> tuple[bool, str]:
+    """Deterministic fast-fail rules mirroring hard NO_TRADE conditions in each strategy prompt.
+
+    Runs before the LLM call so obviously non-qualifying pairs don't consume tokens.
+    Only rules that the prompts already treat as mandatory NO_TRADE are enforced here.
+    Volume thresholds are relaxed for MODERATE/AGGRESSIVE because those risk profiles
+    explicitly override secondary volume requirements in the LLM instructions.
+    """
+    strat = strategy.strip().upper()
+    profile = (risk_profile or "CONSERVATIVE").strip().upper()
+    if strat == "TREND_PULLBACK":
+        if htf_summary.get("ema_bias") == "FLAT_RANGING":
+            return False, "HTF FLAT_RANGING: tidak ada arah tren untuk pullback"
+    elif strat == "BREAKOUT_MOMENTUM":
+        min_vr = {"MODERATE": 1.0, "AGGRESSIVE": 0.8}.get(profile, 1.2)
+        vr = float(ltf_summary.get("volume_ratio") or 0.0)
+        if vr < min_vr:
+            return False, f"LTF volume_ratio {vr:.2f} < {min_vr:.2f} (syarat konfirmasi breakout)"
+    elif strat == "MEAN_REVERSION_SCALP":
+        vr = float(ltf_summary.get("volume_ratio") or 0.0)
+        if vr >= 1.8:
+            return False, f"LTF volume_ratio {vr:.2f} >= 1.80 (ekspansi bervolume, bukan kondisi range)"
+    return True, "OK"
+
+
 def prefilter_and_build_snapshot(
     symbol: str,
     ticker: dict[str, Any],
