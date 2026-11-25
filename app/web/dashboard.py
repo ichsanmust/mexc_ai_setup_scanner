@@ -436,6 +436,7 @@ def get_scanner_status(db: Session = Depends(get_db)):
     rt_cfg = resolve_runtime_settings(db)
     return {
         "is_running": scan_pipeline.is_running,
+        "progress": scan_pipeline.current_progress,
         "auto_start_scheduler": settings.auto_start_scheduler,
         "auto_scan_enabled": rt_cfg["auto_scan_enabled"],
         "scan_mode": rt_cfg["scan_mode"],
@@ -720,10 +721,20 @@ def get_scan_run_evaluations(run_id: int, db: Session = Depends(get_db)):
         .all()
     )
     strat_map = _build_strategy_map(db)
+    live_progress = (
+        scan_pipeline.current_progress
+        if (
+            run.status == "RUNNING"
+            and scan_pipeline.current_progress is not None
+            and scan_pipeline.current_progress.get("scan_run_id") == run_id
+        )
+        else None
+    )
     return ScanRunEvaluationsResponse(
         run=ScanRunOut.model_validate(run),
         evaluations=[ScanEvaluationOut.model_validate(e) for e in evals],
         setups=[_setup_to_out(s, strategy_map=strat_map) for s in setups],
+        progress=live_progress,
     )
 
 

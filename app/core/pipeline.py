@@ -93,6 +93,29 @@ class ScanPipeline:
         self._lock = asyncio.Lock()
         self.is_running: bool = False
         self.last_run_summary: Optional[dict[str, Any]] = None
+        self.current_progress: Optional[dict[str, Any]] = None
+
+    def _set_progress(
+        self,
+        scan_run_id: int,
+        stage: str,
+        stage_label: str,
+        percent: int,
+        detail: str = "",
+        done: int = 0,
+        total: int = 0,
+        current_symbol: Optional[str] = None,
+    ) -> None:
+        self.current_progress = {
+            "scan_run_id": scan_run_id,
+            "stage": stage,
+            "stage_label": stage_label,
+            "percent": max(0, min(100, int(percent))),
+            "detail": detail,
+            "done": done,
+            "total": total,
+            "current_symbol": current_symbol,
+        }
 
     async def run_once(
         self,
@@ -146,6 +169,13 @@ class ScanPipeline:
             db.add(scan_run)
             db.commit()
             db.refresh(scan_run)
+            self._set_progress(
+                scan_run.id,
+                stage="FETCH_PAIRS",
+                stage_label="Mengambil daftar pair MEXC",
+                percent=5,
+                detail="Menghubungi API publik MEXC Futures...",
+            )
 
             try:
                 summary = await self._execute_cycle(
@@ -194,6 +224,7 @@ class ScanPipeline:
                 return summary
             finally:
                 self.is_running = False
+                self.current_progress = None
                 db.close()
 
     async def _execute_cycle(
@@ -243,13 +274,37 @@ class ScanPipeline:
 
             # Fetch unique interval klines concurrently per pair (zero duplicate MEXC requests)
             unique_intervals = list(interval_limits.items())
+            total_pairs_n = len(top_pairs)
+            kline_done = 0
+            self._set_progress(
+                scan_run.id,
+                stage="FETCH_KLINES",
+                stage_label="Mengambil data candlestick (kline)",
+                percent=10,
+                detail=f"0/{total_pairs_n} pair",
+                done=0,
+                total=total_pairs_n,
+            )
 
             async def fetch_pair_candles(pair: dict[str, Any]) -> dict[str, Any]:
+                nonlocal kline_done
                 sym = pair["symbol"]
                 fetched = await asyncio.gather(
                     *(mexc.get_kline(sym, interval=iv, limit=lim) for iv, lim in unique_intervals)
                 )
                 candles_by_iv = {iv: candles for (iv, _), candles in zip(unique_intervals, fetched)}
+                kline_done += 1
+                pct = 10 + int((kline_done / max(1, total_pairs_n)) * 20)
+                self._set_progress(
+                    scan_run.id,
+                    stage="FETCH_KLINES",
+                    stage_label="Mengambil data candlestick (kline)",
+                    percent=pct,
+                    detail=f"{kline_done}/{total_pairs_n} pair ({sym})",
+                    done=kline_done,
+                    total=total_pairs_n,
+                    current_symbol=sym,
+                )
                 return {**pair, "candles_by_iv": candles_by_iv}
 
             pair_results = await asyncio.gather(
@@ -266,6 +321,13 @@ class ScanPipeline:
                     btc_ticker = item.get("ticker")
                     break
             if not btc_candles_by_iv and top_pairs:
+                self._set_progress(
+                    scan_run.id,
+                    stage="BTC_CONTEXT",
+                    stage_label="Menganalisis konteks BTC_USDT",
+                    percent=32,
+                    detail="Membaca struktur HTF/LTF BTC_USDT...",
+                )
                 try:
                     btc_fetched = await asyncio.gather(
                         *(mexc.get_kline("BTC_USDT", interval=iv, limit=lim) for iv, lim in unique_intervals)
@@ -310,6 +372,15 @@ class ScanPipeline:
             )
 
         # Build & cache multi-timeframe snapshots per (symbol, htf, ltf)
+        self._set_progress(
+            scan_run.id,
+            stage="PREFILTER",
+            stage_label="Pre-filter indikator & ATR",
+            percent=38,
+            detail=f"Memfilter {len(top_pairs)} pair terhadap batas ATR%...",
+            done=0,
+            total=len(top_pairs),
+        )
         snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
         btc_context_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
         passed_symbols: set[str] = set()
@@ -379,8 +450,20 @@ class ScanPipeline:
         accepts_risk_profile = "risk_profile" in ai_params
 
         llm_sem = asyncio.Semaphore(rt_cfg["llm_max_concurrency"])
+        total_ai_tasks = len(ai_tasks)
+        ai_done = 0
+        self._set_progress(
+            scan_run.id,
+            stage="AI_ANALYSIS",
+            stage_label="Analisis setup oleh AI",
+            percent=45,
+            detail=f"0/{total_ai_tasks} evaluasi AI" if total_ai_tasks else "Tidak ada pair lolos pre-filter",
+            done=0,
+            total=total_ai_tasks,
+        )
 
         async def run_one_ai(snap: dict[str, Any], strat: str):
+            nonlocal ai_done
             async with llm_sem:
                 try:
                     kwargs: dict[str, Any] = {
@@ -401,8 +484,29 @@ class ScanPipeline:
                     return snap, strat, decision, raw_resp, None
                 except Exception as exc:
                     return snap, strat, None, None, exc
+                finally:
+                    ai_done += 1
+                    pct = 45 + int((ai_done / max(1, total_ai_tasks)) * 47)
+                    self._set_progress(
+                        scan_run.id,
+                        stage="AI_ANALYSIS",
+                        stage_label="Analisis setup oleh AI",
+                        percent=pct,
+                        detail=f"{ai_done}/{total_ai_tasks} selesai ({snap['symbol']} • {strat})",
+                        done=ai_done,
+                        total=total_ai_tasks,
+                        current_symbol=snap["symbol"],
+                    )
 
         ai_results = await asyncio.gather(*(run_one_ai(s, st) for s, st in ai_tasks))
+
+        self._set_progress(
+            scan_run.id,
+            stage="SAVING",
+            stage_label="Validasi Risk Guard & menyimpan hasil",
+            percent=95,
+            detail=f"Memvalidasi {len(ai_results)} hasil evaluasi AI...",
+        )
 
         ai_analyzed_count = 0
         setups_created = 0

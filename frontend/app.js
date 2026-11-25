@@ -170,6 +170,8 @@ const state = {
   mexcPairsLoading: false,
   evalFilter: "ALL",
   evalRows: [],
+  evalModalRunId: null,
+  evalModalPollTimer: null,
   chart: null,
   chartRefreshing: false,
   renderedSetupId: null,
@@ -324,8 +326,11 @@ async function loadHealthAndStatus() {
   badge.className = "badge";
   if (scannerStatus.is_running) {
     badge.classList.add("badge-open");
-    badge.textContent = "Scanning...";
-    badge.title = "";
+    const pct = scannerStatus.progress?.percent;
+    badge.textContent = Number.isFinite(pct) ? `Scanning... ${pct}%` : "Scanning...";
+    badge.title = scannerStatus.progress?.stage_label
+      ? `${scannerStatus.progress.stage_label}${scannerStatus.progress.detail ? ` — ${scannerStatus.progress.detail}` : ""}`
+      : "";
   } else if (failedSummary || failedRun) {
     badge.classList.add("badge-hit-sl");
     badge.textContent = "Last Scan Failed";
@@ -524,46 +529,106 @@ function resolveSetupStrategyMeta(setup) {
   };
 }
 
+function stopEvalModalPolling() {
+  if (state.evalModalPollTimer) {
+    clearInterval(state.evalModalPollTimer);
+    state.evalModalPollTimer = null;
+  }
+  state.evalModalRunId = null;
+}
+
+function renderEvalModalProgress(run, progress) {
+  const box = document.getElementById("eval-modal-progress");
+  if (!box) return;
+  if (!run || run.status !== "RUNNING") {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, Number(progress?.percent ?? 5)));
+  const stageLabel = progress?.stage_label || "Scan sedang berjalan di background...";
+  const detail = progress?.detail || "Menunggu pembaruan progres...";
+  box.innerHTML = `
+    <div class="eval-progress-header">
+      <strong>${escapeHtml(stageLabel)}</strong>
+      <span class="badge badge-open">${pct}%</span>
+    </div>
+    <div class="eval-progress-track">
+      <div class="eval-progress-fill" style="width: ${pct}%;"></div>
+    </div>
+    <div class="eval-progress-detail">${escapeHtml(detail)}</div>
+  `;
+  box.classList.remove("hidden");
+}
+
+async function fetchAndRenderScanEvaluations(runId, { preserveFilter = false } = {}) {
+  const data = await apiRequest(`/api/scanner/runs/${runId}/evaluations`);
+  const r = data.run;
+  renderEvalModalProgress(r, data.progress);
+  const cfg = r.settings_snapshot || null;
+  const settingsHtml = buildScanSettingsHtml(cfg, r.strategy);
+  const setupNames = (data.setups || []).map((s) => `${s.symbol} (${s.decision} ${s.strategy_used})`).join(", ");
+  const startedTxt = r.started_at ? formatJakartaDateTime(r.started_at, true) : "-";
+  const finishedTxt = r.finished_at ? formatJakartaDateTime(r.finished_at, true) : "-";
+  document.getElementById("eval-modal-summary").innerHTML = `
+    <div><strong>Status:</strong> ${r.status} &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
+    <div><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
+    <div><strong>Ringkasan:</strong> Top Pair: ${r.top_pairs_count} | Lolos Pre-filter: ${r.prefiltered_count} | Dianalisis AI: ${r.ai_analyzed_count} | Setup Masuk: <b>${r.setups_created_count}</b></div>
+    ${settingsHtml}
+    ${setupNames ? `<div><strong>Setup Terbuat:</strong> ${escapeHtml(setupNames)}</div>` : ""}
+    ${r.error_message ? `<div class="text-red"><strong>Error:</strong> ${escapeHtml(r.error_message)}</div>` : ""}
+  `;
+  const setupRows = (data.setups || []).map((s) => ({
+    is_setup: true,
+    setup_obj: s,
+    symbol: s.symbol,
+    strategy_used: s.strategy_used,
+    raw_decision: s.decision,
+    confidence: s.confidence,
+    rejection_reason: `MASUK SETUP (${s.status}) • E: ${fmtPrice(s.entry_price)} | SL: ${fmtPrice(s.stop_loss)} | TP: ${fmtPrice(s.take_profit)} | R:R ${Number(s.risk_reward_ratio).toFixed(2)} — ${s.rationale}`,
+  }));
+  const evalOnlyRows = (data.evaluations || []).map((e) => ({ ...e, is_setup: false }));
+  state.evalRows = [...setupRows, ...evalOnlyRows];
+  if (!preserveFilter) {
+    state.evalFilter = "ALL";
+    document.querySelectorAll("#eval-filter-tabs .tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.evalFilter === "ALL");
+    });
+  }
+  renderEvalTable();
+  return r;
+}
+
 async function openScanEvaluationsModal(runId) {
+  stopEvalModalPolling();
+  state.evalModalRunId = runId;
   const modal = document.getElementById("scan-eval-modal");
   modal.classList.remove("hidden");
   document.getElementById("eval-modal-title").textContent = `Detail Evaluasi Scan #${runId}`;
+  document.getElementById("eval-modal-progress")?.classList.add("hidden");
   document.getElementById("eval-modal-summary").textContent = "Memuat data evaluasi...";
   document.getElementById("eval-modal-tbody").innerHTML =
     `<tr><td colspan="5" class="empty-cell">Memuat...</td></tr>`;
 
   try {
-    const data = await apiRequest(`/api/scanner/runs/${runId}/evaluations`);
-    const r = data.run;
-    const cfg = r.settings_snapshot || null;
-    const settingsHtml = buildScanSettingsHtml(cfg, r.strategy);
-    const setupNames = (data.setups || []).map((s) => `${s.symbol} (${s.decision} ${s.strategy_used})`).join(", ");
-    const startedTxt = r.started_at ? formatJakartaDateTime(r.started_at, true) : "-";
-    const finishedTxt = r.finished_at ? formatJakartaDateTime(r.finished_at, true) : "-";
-    document.getElementById("eval-modal-summary").innerHTML = `
-      <div><strong>Status:</strong> ${r.status} &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
-      <div><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
-      <div><strong>Ringkasan:</strong> Top Pair: ${r.top_pairs_count} | Lolos Pre-filter: ${r.prefiltered_count} | Dianalisis AI: ${r.ai_analyzed_count} | Setup Masuk: <b>${r.setups_created_count}</b></div>
-      ${settingsHtml}
-      ${setupNames ? `<div><strong>Setup Terbuat:</strong> ${escapeHtml(setupNames)}</div>` : ""}
-      ${r.error_message ? `<div class="text-red"><strong>Error:</strong> ${escapeHtml(r.error_message)}</div>` : ""}
-    `;
-    const setupRows = (data.setups || []).map((s) => ({
-      is_setup: true,
-      setup_obj: s,
-      symbol: s.symbol,
-      strategy_used: s.strategy_used,
-      raw_decision: s.decision,
-      confidence: s.confidence,
-      rejection_reason: `MASUK SETUP (${s.status}) • E: ${fmtPrice(s.entry_price)} | SL: ${fmtPrice(s.stop_loss)} | TP: ${fmtPrice(s.take_profit)} | R:R ${Number(s.risk_reward_ratio).toFixed(2)} — ${s.rationale}`,
-    }));
-    const evalOnlyRows = (data.evaluations || []).map((e) => ({ ...e, is_setup: false }));
-    state.evalRows = [...setupRows, ...evalOnlyRows];
-    state.evalFilter = "ALL";
-    document.querySelectorAll("#eval-filter-tabs .tab").forEach((b) => {
-      b.classList.toggle("active", b.dataset.evalFilter === "ALL");
-    });
-    renderEvalTable();
+    const r = await fetchAndRenderScanEvaluations(runId);
+    if (r.status === "RUNNING") {
+      state.evalModalPollTimer = setInterval(async () => {
+        if (state.evalModalRunId !== runId || modal.classList.contains("hidden")) {
+          stopEvalModalPolling();
+          return;
+        }
+        try {
+          const latestRun = await fetchAndRenderScanEvaluations(runId, { preserveFilter: true });
+          if (latestRun.status !== "RUNNING") {
+            stopEvalModalPolling();
+            await Promise.all([loadHealthAndStatus(), loadSetups(), loadAnalytics()]);
+          }
+        } catch (_) {
+          // Keep polling quietly on transient errors
+        }
+      }, 1500);
+    }
   } catch (err) {
     document.getElementById("eval-modal-summary").textContent = err.message;
     document.getElementById("eval-modal-tbody").innerHTML =
@@ -614,6 +679,7 @@ function renderEvalTable() {
       const sid = Number(tr.dataset.evalSetupId);
       const found = state.evalRows.find((r) => r.is_setup && r.setup_obj.id === sid);
       if (found) {
+        stopEvalModalPolling();
         document.getElementById("scan-eval-modal").classList.add("hidden");
         switchMainView("scanner");
         selectSetup(found.setup_obj);
@@ -3881,6 +3947,7 @@ function wireEvents() {
   });
 
   document.getElementById("btn-close-eval-modal").addEventListener("click", () => {
+    stopEvalModalPolling();
     document.getElementById("scan-eval-modal").classList.add("hidden");
   });
   document.querySelectorAll("#eval-filter-tabs .tab").forEach((btn) => {

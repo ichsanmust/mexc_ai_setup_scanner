@@ -298,6 +298,7 @@ class ScanRunEvaluationsResponse(BaseModel):
     run: ScanRunOut
     evaluations: list[ScanEvaluationOut]
     setups: list[SetupOut]
+    progress: Optional[dict[str, Any]] = None
 
 
 class AIModelCreate(BaseModel):
