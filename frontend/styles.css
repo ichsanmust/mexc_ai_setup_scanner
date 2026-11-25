@@ -2163,6 +2163,42 @@ code {
   margin-bottom: 4px;
 }
 
+.pair-picker-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pair-paste-box {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.pair-paste-box textarea {
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.pair-paste-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
 .pair-picker-input-row {
   display: flex;
   gap: 6px;

@@ -3346,27 +3346,46 @@ function renderSelectedPairsChips() {
     .join("");
 }
 
+function normalizePastedPairToken(rawToken) {
+  let tok = String(rawToken || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\/\-]+/g, "_");
+  if (!tok) return "";
+  if (!tok.includes("_")) {
+    if (tok.endsWith("USDT") && tok.length > 4) {
+      tok = `${tok.slice(0, -4)}_USDT`;
+    } else {
+      tok = `${tok}_USDT`;
+    }
+  }
+  return /^[A-Z0-9]+_[A-Z0-9]+$/.test(tok) ? tok : "";
+}
+
 function addSelectedPairSymbol(rawInput) {
   const tokens = String(rawInput || "")
-    .split(/[\s,;]+/)
-    .map((s) => s.trim().toUpperCase())
+    .split(/[\r\n\t,; ]+/)
+    .map(normalizePastedPairToken)
     .filter(Boolean);
-  if (!tokens.length) return;
+  if (!tokens.length) return { added: 0, skipped: 0 };
   let added = 0;
-  for (const tok of tokens) {
-    const normalized = tok.includes("_") ? tok : `${tok}_USDT`;
-    if (!state.selectedPairs.includes(normalized)) {
-      if (state.selectedPairs.length >= 100) {
-        showToast("Maksimal 100 pair yang dapat dipilih.", true);
-        break;
-      }
-      state.selectedPairs.push(normalized);
-      added += 1;
+  let skipped = 0;
+  for (const normalized of tokens) {
+    if (state.selectedPairs.includes(normalized)) {
+      skipped += 1;
+      continue;
     }
+    if (state.selectedPairs.length >= 100) {
+      showToast("Maksimal 100 pair yang dapat dipilih.", true);
+      break;
+    }
+    state.selectedPairs.push(normalized);
+    added += 1;
   }
   if (added > 0) {
     renderSelectedPairsChips();
   }
+  return { added, skipped };
 }
 
 function renderPairSuggestions(query) {
@@ -3416,7 +3435,46 @@ function bindPairPickerEvents() {
         sugBox?.classList.add("hidden");
       }
     });
+    searchEl.addEventListener("paste", (e) => {
+      const pasted = e.clipboardData?.getData("text") || "";
+      if (/[\r\n\t,; ]/.test(pasted.trim())) {
+        e.preventDefault();
+        const { added, skipped } = addSelectedPairSymbol(pasted);
+        searchEl.value = "";
+        sugBox?.classList.add("hidden");
+        if (added > 0) {
+          showToast(`Ditambahkan ${added} pair${skipped ? ` (${skipped} duplikat dilewati)` : ""}.`);
+        } else if (skipped > 0) {
+          showToast("Semua pair yang di-paste sudah ada di daftar.");
+        }
+      }
+    });
   }
+  const pasteBox = document.getElementById("cfg-pair-paste-box");
+  const pasteInput = document.getElementById("cfg-pair-paste-input");
+  document.getElementById("btn-toggle-paste-pairs")?.addEventListener("click", () => {
+    if (!pasteBox) return;
+    pasteBox.classList.toggle("hidden");
+    if (!pasteBox.classList.contains("hidden")) {
+      pasteInput?.focus();
+    }
+  });
+  document.getElementById("btn-cancel-paste-pairs")?.addEventListener("click", () => {
+    pasteBox?.classList.add("hidden");
+  });
+  document.getElementById("btn-apply-paste-pairs")?.addEventListener("click", () => {
+    if (!pasteInput) return;
+    const { added, skipped } = addSelectedPairSymbol(pasteInput.value);
+    if (added > 0) {
+      pasteInput.value = "";
+      pasteBox?.classList.add("hidden");
+      showToast(`Ditambahkan ${added} pair${skipped ? ` (${skipped} duplikat dilewati)` : ""}.`);
+    } else if (skipped > 0) {
+      showToast("Semua pair yang di-paste sudah ada di daftar.");
+    } else {
+      showToast("Tidak ada pair valid yang ditemukan dari teks paste.", true);
+    }
+  });
   document.getElementById("btn-add-custom-pair")?.addEventListener("click", () => {
     if (!searchEl) return;
     addSelectedPairSymbol(searchEl.value);

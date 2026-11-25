@@ -698,13 +698,26 @@
                 <div class="pair-picker-header">
                   <label for="cfg-pair-search">
                     Daftar Pair Dipilih (<span id="cfg-selected-pairs-count">0</span>)
-                    <button type="button" class="info-btn" data-info-title="Pilih Pair Manual" data-info="Cari pair dari daftar MEXC Futures atau ketik langsung (mis. BTC_USDT, ETH_USDT) lalu tekan Enter atau klik Tambah. Filter Min/Max 24h Volume dilewati pada mode ini.">i</button>
+                    <button type="button" class="info-btn" data-info-title="Pilih Pair Manual" data-info="Cari pair dari daftar MEXC Futures, ketik langsung, atau paste langsung daftar pair dari Excel/spreadsheet (dipisah baris baru, tab, koma, atau spasi). Filter Min/Max 24h Volume dilewati pada mode ini.">i</button>
                   </label>
-                  <button type="button" id="btn-clear-selected-pairs" class="btn btn-secondary btn-xs">Hapus Semua</button>
+                  <div class="pair-picker-header-actions">
+                    <button type="button" id="btn-toggle-paste-pairs" class="btn btn-secondary btn-xs">Paste Excel</button>
+                    <button type="button" id="btn-clear-selected-pairs" class="btn btn-secondary btn-xs">Hapus Semua</button>
+                  </div>
                 </div>
                 <div class="pair-picker-input-row">
-                  <input id="cfg-pair-search" type="text" placeholder="Cari atau ketik pair (mis. BTC_USDT, SOL)..." autocomplete="off" />
+                  <input id="cfg-pair-search" type="text" placeholder="Cari, ketik, atau paste dari Excel (mis. BTC_USDT, SOL)..." autocomplete="off" />
                   <button type="button" id="btn-add-custom-pair" class="btn btn-secondary btn-sm">+ Tambah</button>
+                </div>
+                <div id="cfg-pair-paste-box" class="pair-paste-box hidden">
+                  <textarea id="cfg-pair-paste-input" rows="4" placeholder="Paste kolom pair dari Excel di sini (1 pair per baris, atau dipisah koma/tab/spasi)&#10;Contoh:&#10;BTC_USDT&#10;ETH_USDT&#10;SOLUSDT&#10;SUI"></textarea>
+                  <div class="pair-paste-actions">
+                    <span class="subtitle-sm">Mendukung format <code>BTC_USDT</code>, <code>BTCUSDT</code>, <code>BTC/USDT</code>, atau <code>BTC</code></span>
+                    <div style="display:flex; gap:6px;">
+                      <button type="button" id="btn-cancel-paste-pairs" class="btn btn-secondary btn-xs">Tutup</button>
+                      <button type="button" id="btn-apply-paste-pairs" class="btn btn-primary btn-xs">Tambahkan Pair</button>
+                    </div>
+                  </div>
                 </div>
                 <div id="cfg-pair-suggestions" class="pair-suggestions hidden"></div>
                 <div id="cfg-selected-pairs-chips" class="pair-chips-box"></div>
