@@ -305,6 +305,7 @@ async def analyze_market_snapshot(
         "model": model_id,
         "temperature": 0.1,
         "max_tokens": eff_max_tokens,
+        "stream": False,
         "messages": [
             {"role": "system", "content": resolved_prompt},
             {"role": "user", "content": user_message},
@@ -481,6 +482,7 @@ async def test_llm_connection(
         "messages": [{"role": "user", "content": "Reply with one word: OK"}],
         "max_tokens": 64,
         "temperature": 0,
+        "stream": False,
     }
 
     start = time.perf_counter()
@@ -490,7 +492,18 @@ async def test_llm_connection(
             latency_ms = int((time.perf_counter() - start) * 1000)
 
             if resp.status_code == 200:
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except ValueError:
+                    ctype = resp.headers.get("content-type", "-")
+                    snippet = resp.text.strip()[:300] or "(response body kosong)"
+                    return {
+                        "success": False,
+                        "message": f"HTTP 200 dari {provider}, tetapi respons bukan JSON ({ctype}): {snippet}",
+                        "provider": provider,
+                        "model_id": model_id,
+                        "latency_ms": latency_ms,
+                    }
                 if isinstance(data, dict) and data.get("error") and not data.get("choices"):
                     return {
                         "success": False,
