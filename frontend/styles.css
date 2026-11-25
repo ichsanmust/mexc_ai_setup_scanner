@@ -1719,7 +1719,7 @@ input:disabled, select:disabled {
 }
 .add-model-form {
   display: grid;
-  grid-template-columns: 1fr 1fr 180px auto;
+  grid-template-columns: 1fr 1fr 180px 1fr auto;
   gap: 10px;
   align-items: end;
 }

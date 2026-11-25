@@ -1022,10 +1022,11 @@
 
           <div id="add-model-card" class="add-model-card hidden">
             <div class="add-model-card-header">
-              <strong>Tambah Model AI Baru ke Database</strong>
+              <strong id="add-model-card-title">Tambah Model AI Baru ke Database</strong>
               <button type="button" id="btn-cancel-add-model" class="btn-icon" title="Tutup">&times;</button>
             </div>
             <div class="add-model-form">
+              <input type="hidden" id="edit-model-id" value="" />
               <div>
                 <label for="new-model-name">Nama Tampilan</label>
                 <input id="new-model-name" type="text" placeholder="mis. Gemini 2.5 Pro" />
@@ -1041,6 +1042,10 @@
                   <option value="openrouter">openrouter</option>
                   <option value="custom">custom</option>
                 </select>
+              </div>
+              <div>
+                <label for="new-model-description">Deskripsi <small class="subtitle-sm">(opsional)</small></label>
+                <input id="new-model-description" type="text" placeholder="mis. Model flagship Google" />
               </div>
               <div class="add-model-submit">
                 <button type="button" id="btn-add-model" class="btn btn-primary">Simpan Model</button>

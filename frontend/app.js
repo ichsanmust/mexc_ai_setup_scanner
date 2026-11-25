@@ -3241,6 +3241,7 @@ function renderAIModelsTable() {
         <td><span class="badge badge-neutral">${m.provider}</span></td>
         <td>${m.is_active ? '<span class="badge badge-hit-tp">ACTIVE</span>' : '<span class="badge badge-neutral">Inactive</span>'}</td>
         <td>
+          ${m.is_active ? "" : `<button class="btn btn-secondary btn-sm" data-act="edit" data-id="${m.id}">Edit</button>`}
           ${m.is_active ? "" : `<button class="btn btn-primary btn-sm" data-act="activate" data-id="${m.id}">Pilih / Aktifkan</button>`}
           ${m.is_active ? "" : `<button class="btn btn-danger btn-sm" data-act="delete" data-id="${m.id}">Hapus</button>`}
         </td>
@@ -3254,7 +3255,9 @@ function renderAIModelsTable() {
       const act = btn.dataset.act;
       const modelObj = (state.aiModels || []).find((m) => m.id === id);
       try {
-        if (act === "activate") {
+        if (act === "edit") {
+          openEditAIModel(modelObj);
+        } else if (act === "activate") {
           const res = await apiRequest(`/api/ai/models/${id}/activate`, { method: "POST" });
           showToast(res.message);
           await Promise.all([loadAIModalData(false), loadHealthAndStatus()]);
@@ -3690,23 +3693,54 @@ async function testAIConnection() {
   }
 }
 
+function openEditAIModel(model) {
+  document.getElementById("edit-model-id").value = model.id;
+  document.getElementById("new-model-name").value = model.name;
+  document.getElementById("new-model-id").value = model.model_id;
+  document.getElementById("new-model-provider").value = model.provider;
+  document.getElementById("new-model-description").value = model.description || "";
+  document.getElementById("add-model-card-title").textContent = "Edit Model AI";
+  document.getElementById("btn-add-model").textContent = "Update Model";
+  document.getElementById("add-model-card").classList.remove("hidden");
+  document.getElementById("add-model-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function resetAddModelForm() {
+  document.getElementById("edit-model-id").value = "";
+  document.getElementById("new-model-name").value = "";
+  document.getElementById("new-model-id").value = "";
+  document.getElementById("new-model-provider").value = "commandcode";
+  document.getElementById("new-model-description").value = "";
+  document.getElementById("add-model-card-title").textContent = "Tambah Model AI Baru ke Database";
+  document.getElementById("btn-add-model").textContent = "Simpan Model";
+}
+
 async function addAIModel() {
+  const editId = document.getElementById("edit-model-id").value;
   const name = document.getElementById("new-model-name").value.trim();
   const model_id = document.getElementById("new-model-id").value.trim();
   const provider = document.getElementById("new-model-provider").value;
+  const description = document.getElementById("new-model-description").value.trim();
   if (!name || !model_id) {
     showToast("Nama model dan Model ID wajib diisi.", true);
     return;
   }
   try {
-    await apiRequest("/api/ai/models", {
-      method: "POST",
-      body: JSON.stringify({ name, model_id, provider }),
-    });
-    document.getElementById("new-model-name").value = "";
-    document.getElementById("new-model-id").value = "";
+    if (editId) {
+      await apiRequest(`/api/ai/models/${editId}`, {
+        method: "PUT",
+        body: JSON.stringify({ name, model_id, provider, description: description || null }),
+      });
+      showToast(`Model '${name}' diperbarui.`);
+    } else {
+      await apiRequest("/api/ai/models", {
+        method: "POST",
+        body: JSON.stringify({ name, model_id, provider, description: description || null }),
+      });
+      showToast(`Model '${name}' ditambahkan.`);
+    }
+    resetAddModelForm();
     document.getElementById("add-model-card").classList.add("hidden");
-    showToast(`Model '${name}' ditambahkan.`);
     await loadAIModalData();
   } catch (err) {
     showToast(err.message, true);
@@ -4481,9 +4515,13 @@ function wireEvents() {
   document.getElementById("btn-save-ai-settings").addEventListener("click", saveAISettings);
   document.getElementById("btn-test-ai-conn").addEventListener("click", testAIConnection);
   document.getElementById("btn-toggle-add-model").addEventListener("click", () => {
-    document.getElementById("add-model-card").classList.toggle("hidden");
+    const card = document.getElementById("add-model-card");
+    const wasHidden = card.classList.contains("hidden");
+    if (wasHidden) resetAddModelForm();
+    card.classList.toggle("hidden");
   });
   document.getElementById("btn-cancel-add-model").addEventListener("click", () => {
+    resetAddModelForm();
     document.getElementById("add-model-card").classList.add("hidden");
   });
   document.getElementById("btn-add-model").addEventListener("click", addAIModel);
