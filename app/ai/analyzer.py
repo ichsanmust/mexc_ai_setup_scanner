@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import random
 import time
 from typing import Any, Optional
 
@@ -323,43 +324,79 @@ async def analyze_market_snapshot(
             messages_payload: list[dict[str, str]],
             max_tokens_override: Optional[int] = None,
             force_plain: bool = False,
+            max_retries: int = 4,
         ) -> dict[str, Any]:
             req_base = {
                 **base_payload,
                 "messages": messages_payload,
                 "max_tokens": max_tokens_override if max_tokens_override is not None else eff_max_tokens,
             }
-            if force_plain:
-                resp = await client.post(base_url, headers=headers, json=req_base)
-            else:
-                payload_schema = {**req_base, "response_format": _build_response_format_schema()}
-                resp = await client.post(base_url, headers=headers, json=payload_schema)
+            last_err_text = ""
+            for attempt in range(max_retries):
+                if force_plain:
+                    resp = await client.post(base_url, headers=headers, json=req_base)
+                else:
+                    payload_schema = {**req_base, "response_format": _build_response_format_schema()}
+                    resp = await client.post(base_url, headers=headers, json=payload_schema)
 
-                # Graceful fallback if provider rejects strict json_schema format
-                if resp.status_code in (400, 422):
-                    log.warning(
-                        "Provider %s (%s) returned %s for strict json_schema; falling back to json_object",
-                        provider,
-                        model_id,
-                        resp.status_code,
-                    )
-                    payload_obj = {**req_base, "response_format": {"type": "json_object"}}
-                    resp = await client.post(base_url, headers=headers, json=payload_obj)
+                    # Graceful fallback if provider rejects strict json_schema format
                     if resp.status_code in (400, 422):
                         log.warning(
-                            "Provider %s (%s) returned %s for json_object; falling back to plain chat completions",
+                            "Provider %s (%s) returned %s for strict json_schema; falling back to json_object",
                             provider,
                             model_id,
                             resp.status_code,
                         )
-                        resp = await client.post(base_url, headers=headers, json=req_base)
+                        payload_obj = {**req_base, "response_format": {"type": "json_object"}}
+                        resp = await client.post(base_url, headers=headers, json=payload_obj)
+                        if resp.status_code in (400, 422):
+                            log.warning(
+                                "Provider %s (%s) returned %s for json_object; falling back to plain chat completions",
+                                provider,
+                                model_id,
+                                resp.status_code,
+                            )
+                            resp = await client.post(base_url, headers=headers, json=req_base)
 
-            if resp.is_error:
-                raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
-            raw_resp = resp.json()
-            if isinstance(raw_resp, dict) and raw_resp.get("error") and not raw_resp.get("choices"):
-                raise RuntimeError(f"LLM API error: {raw_resp['error']}")
-            return raw_resp
+                # Handle Rate Limit (429) or Server Errors (502, 503, 504) with exponential backoff + jitter
+                if resp.status_code in (429, 502, 503, 504):
+                    last_err_text = resp.text[:300]
+                    if attempt < max_retries - 1:
+                        wait_s = (2 ** attempt) * 1.5 + random.uniform(0.5, 2.0)
+                        log.warning(
+                            "LLM HTTP %s on %s (%s) [attempt %s/%s]; rate-limited or transient error, retrying in %.1fs...",
+                            resp.status_code,
+                            model_id,
+                            snapshot.get("symbol"),
+                            attempt + 1,
+                            max_retries,
+                            wait_s,
+                        )
+                        await asyncio.sleep(wait_s)
+                        continue
+
+                if resp.is_error:
+                    raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
+                raw_resp = resp.json()
+                if isinstance(raw_resp, dict) and raw_resp.get("error") and not raw_resp.get("choices"):
+                    err_msg = str(raw_resp["error"])
+                    if "rate_limit" in err_msg.lower() or "429" in err_msg:
+                        last_err_text = err_msg
+                        if attempt < max_retries - 1:
+                            wait_s = (2 ** attempt) * 1.5 + random.uniform(0.5, 2.0)
+                            log.warning(
+                                "LLM body rate limit error on %s (%s) [attempt %s/%s], retrying in %.1fs...",
+                                model_id,
+                                snapshot.get("symbol"),
+                                attempt + 1,
+                                max_retries,
+                                wait_s,
+                            )
+                            await asyncio.sleep(wait_s)
+                            continue
+                    raise RuntimeError(f"LLM API error: {err_msg}")
+                return raw_resp
+            raise RuntimeError(f"HTTP 429 / Rate limit exceeded after {max_retries} attempts ({model_id}): {last_err_text}")
 
         messages = list(base_payload["messages"])
         raw_response = await _call_llm(messages)
