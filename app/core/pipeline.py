@@ -114,6 +114,8 @@ class ScanPipeline:
 
             settings_snapshot = {
                 "scan_mode": rt_cfg["scan_mode"],
+                "pair_selection_mode": rt_cfg["pair_selection_mode"],
+                "selected_pairs": list(rt_cfg["selected_pairs"]),
                 "active_strategies": list(target_strategies),
                 "strategy_timeframes": strategy_profiles,
                 "top_n_pairs": effective_top_n,
@@ -222,13 +224,19 @@ class ScanPipeline:
             proxy_url=rt_cfg["mexc_proxy_url"],
             max_concurrency=rt_cfg["mexc_max_concurrency"],
         ) as mexc:
-            get_top_kwargs: dict[str, Any] = {
-                "top_n": top_n,
-                "min_quote_volume": rt_cfg["min_24h_quote_volume"],
-            }
-            if "max_quote_volume" in inspect.signature(mexc.get_top_pairs).parameters:
-                get_top_kwargs["max_quote_volume"] = rt_cfg["max_24h_quote_volume"]
-            total_contracts, top_pairs = await mexc.get_top_pairs(**get_top_kwargs)
+            if rt_cfg.get("pair_selection_mode") == "CUSTOM":
+                selected_syms = rt_cfg.get("selected_pairs") or []
+                if not selected_syms:
+                    raise ValueError("Mode Custom Pairs aktif, tetapi belum ada pair yang dipilih di Settings.")
+                total_contracts, top_pairs = await mexc.get_selected_pairs(selected_syms)
+            else:
+                get_top_kwargs: dict[str, Any] = {
+                    "top_n": top_n,
+                    "min_quote_volume": rt_cfg["min_24h_quote_volume"],
+                }
+                if "max_quote_volume" in inspect.signature(mexc.get_top_pairs).parameters:
+                    get_top_kwargs["max_quote_volume"] = rt_cfg["max_24h_quote_volume"]
+                total_contracts, top_pairs = await mexc.get_top_pairs(**get_top_kwargs)
             scan_run.total_contracts = total_contracts
             scan_run.top_pairs_count = len(top_pairs)
             db.commit()

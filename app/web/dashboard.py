@@ -27,7 +27,7 @@ from ..config import (
 )
 from ..core.market_mover import load_latest_btc_market_mover, scan_btc_market_mover
 from ..core.pipeline import scan_pipeline
-from ..core.runtime_settings import resolve_runtime_settings
+from ..core.runtime_settings import parse_selected_pairs, resolve_runtime_settings
 from ..core.tracker import check_open_setups, ensure_created_history
 from ..database import Base, SessionLocal, engine, get_db
 from ..models import AIModel, AppSetting, ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
@@ -506,6 +506,32 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
         _upsert_setting(db, "mexc_max_concurrency", str(body.mexc_max_concurrency))
     if body.auto_scan_enabled is not None:
         _upsert_setting(db, "auto_scan_enabled", "true" if body.auto_scan_enabled else "false")
+    if body.pair_selection_mode is not None or body.selected_pairs is not None:
+        current_rt = resolve_runtime_settings(db)
+        eff_mode = (
+            body.pair_selection_mode.strip().upper()
+            if body.pair_selection_mode is not None
+            else current_rt["pair_selection_mode"]
+        )
+        eff_pairs = (
+            parse_selected_pairs(body.selected_pairs)
+            if body.selected_pairs is not None
+            else list(current_rt["selected_pairs"])
+        )
+        if len(eff_pairs) > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maksimal 100 pair yang dapat dipilih.",
+            )
+        if eff_mode == "CUSTOM" and not eff_pairs:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Minimal satu pair harus dipilih saat menggunakan mode Custom Pairs.",
+            )
+        if body.pair_selection_mode is not None:
+            _upsert_setting(db, "pair_selection_mode", eff_mode)
+        if body.selected_pairs is not None:
+            _upsert_setting(db, "selected_pairs", ",".join(eff_pairs))
     if body.top_n_pairs is not None:
         _upsert_setting(db, "top_n_pairs", str(body.top_n_pairs))
     if body.scan_interval_minutes is not None:
@@ -564,6 +590,52 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
 
     db.commit()
     return ScannerSettingsOut(**resolve_runtime_settings(db))
+
+
+@app.get("/api/mexc/pairs")
+async def list_mexc_pairs(db: Session = Depends(get_db)):
+    """Fetch active USDT-M futures pairs from MEXC sorted by 24h quote volume."""
+    rt_cfg = resolve_runtime_settings(db)
+    try:
+        async with MexcPublicClient(
+            base_url=rt_cfg["mexc_base_url"],
+            proxy_url=rt_cfg["mexc_proxy_url"],
+            max_concurrency=rt_cfg["mexc_max_concurrency"],
+        ) as mexc:
+            contracts, tickers = await asyncio.gather(
+                mexc.get_active_usdt_contracts(),
+                mexc.get_all_tickers(),
+            )
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gagal terhubung ke MEXC ({rt_cfg['mexc_base_url']}): {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gagal memuat daftar pair dari MEXC: {exc}",
+        ) from exc
+
+    items: list[dict[str, Any]] = []
+    for c in contracts:
+        sym = c.get("symbol")
+        if not sym or sym not in tickers:
+            continue
+        t = tickers[sym]
+        last_price = float(t.get("lastPrice") or 0.0)
+        if last_price <= 0:
+            continue
+        items.append(
+            {
+                "symbol": sym,
+                "last_price": last_price,
+                "amount24": float(t.get("amount24") or 0.0),
+                "rise_fall_rate": float(t.get("riseFallRate") or 0.0),
+            }
+        )
+    items.sort(key=lambda x: x["amount24"], reverse=True)
+    return {"total": len(items), "items": items}
 
 
 @app.post("/api/scanner/run")

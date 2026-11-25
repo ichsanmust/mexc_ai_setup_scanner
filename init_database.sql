@@ -173,6 +173,8 @@ INSERT IGNORE INTO `app_settings` (`key`, `value`, `description`) VALUES
 ('mexc_proxy_url', '', 'Proxy opsional untuk request MEXC'),
 ('mexc_max_concurrency', '5', 'Maksimum request paralel ke MEXC'),
 ('auto_scan_enabled', 'true', 'Mode auto-scan terjadwal (true=AUTO, false=MANUAL)'),
+('pair_selection_mode', 'TOP_N', 'Mode pemilihan pair saat scan (TOP_N atau CUSTOM)'),
+('selected_pairs', '', 'Daftar pair manual dipisahkan koma untuk mode CUSTOM (mis. BTC_USDT,ETH_USDT)'),
 ('top_n_pairs', '30', 'Jumlah Top N pair berdasarkan volume 24 jam'),
 ('scan_interval_minutes', '15', 'Interval auto-scan dalam menit'),
 ('tracker_interval_seconds', '60', 'Interval pengecekan outcome setup OPEN (detik)'),

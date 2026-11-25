@@ -154,6 +154,31 @@ class MexcPublicClient:
         merged.sort(key=lambda x: x["amount24"], reverse=True)
         return len(contracts), merged[:limit_n]
 
+    async def get_selected_pairs(self, symbols: list[str]) -> tuple[int, list[dict[str, Any]]]:
+        """Return (total_active_contracts, pair_dicts_for_explicit_symbols) preserving order."""
+        contracts, tickers = await asyncio.gather(
+            self.get_active_usdt_contracts(),
+            self.get_all_tickers(),
+        )
+        contract_map = {c["symbol"]: c for c in contracts if c.get("symbol")}
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_sym in symbols:
+            sym = str(raw_sym or "").strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            contract = contract_map.get(sym)
+            ticker = tickers.get(sym)
+            if not contract or not ticker:
+                continue
+            last_price = float(ticker.get("lastPrice") or 0.0)
+            if last_price <= 0:
+                continue
+            amount_24 = float(ticker.get("amount24") or 0.0)
+            selected.append({"symbol": sym, "contract": contract, "ticker": ticker, "amount24": amount_24})
+        return len(contracts), selected
+
     async def get_kline(
         self,
         symbol: str,

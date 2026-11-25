@@ -671,12 +671,44 @@
                 <button type="button" class="info-btn" data-info-title="Market Scanner & Strategi" data-info="Mengatur jumlah pair terlikuid (Top N Pairs) dan strategi AI yang aktif. Timeframe HTF/LTF, Kline Limit, serta Setup Expiry diatur per strategi pada tabel Kelola Strategi di bawah.">i</button>
               </h4>
               <div class="settings-field">
+                <label class="field-block-label">
+                  Mode Pemilihan Pair
+                  <button type="button" class="info-btn" data-info-title="Mode Pemilihan Pair" data-info="Top N by Volume otomatis mengambil N pair teratas berdasarkan volume 24h. Pilih Pair Manual (Custom) hanya memindai pair yang Anda pilih dan melewati filter Min/Max 24h Volume.">i</button>
+                </label>
+                <div class="pair-mode-radios">
+                  <label class="radio-card">
+                    <input type="radio" name="pair_selection_mode" value="TOP_N" checked />
+                    <span><strong>Top N by Volume</strong> <small>Otomatis filter Min/Max 24h Vol</small></span>
+                  </label>
+                  <label class="radio-card">
+                    <input type="radio" name="pair_selection_mode" value="CUSTOM" />
+                    <span><strong>Pilih Pair Manual</strong> <small>Scan hanya pair terpilih</small></span>
+                  </label>
+                </div>
+              </div>
+              <div id="cfg-top-n-wrapper" class="settings-field">
                 <label for="cfg-top-n-pairs">
                   Top N Pairs
                   <button type="button" class="info-btn" data-info-title="Top N Pairs" data-info="Jumlah pair USDT-M Futures teratas berdasarkan volume 24 jam terbesar di MEXC yang akan dipindai. Contoh: 20 memindai 20 pair paling likuid (semakin besar = semakin banyak panggilan AI).">i</button>
                 </label>
                 <input id="cfg-top-n-pairs" type="number" min="1" max="100" value="30" />
                 <p class="subtitle-sm" style="margin: 2px 0 0;">HTF/LTF, Kline Limit, dan Expiry selalu mengikuti pengaturan masing-masing strategi di tabel <strong>Kelola Strategi</strong> di bawah.</p>
+              </div>
+              <div id="cfg-custom-pairs-wrapper" class="settings-field hidden">
+                <div class="pair-picker-header">
+                  <label for="cfg-pair-search">
+                    Daftar Pair Dipilih (<span id="cfg-selected-pairs-count">0</span>)
+                    <button type="button" class="info-btn" data-info-title="Pilih Pair Manual" data-info="Cari pair dari daftar MEXC Futures atau ketik langsung (mis. BTC_USDT, ETH_USDT) lalu tekan Enter atau klik Tambah. Filter Min/Max 24h Volume dilewati pada mode ini.">i</button>
+                  </label>
+                  <button type="button" id="btn-clear-selected-pairs" class="btn btn-secondary btn-xs">Hapus Semua</button>
+                </div>
+                <div class="pair-picker-input-row">
+                  <input id="cfg-pair-search" type="text" placeholder="Cari atau ketik pair (mis. BTC_USDT, SOL)..." autocomplete="off" />
+                  <button type="button" id="btn-add-custom-pair" class="btn btn-secondary btn-sm">+ Tambah</button>
+                </div>
+                <div id="cfg-pair-suggestions" class="pair-suggestions hidden"></div>
+                <div id="cfg-selected-pairs-chips" class="pair-chips-box"></div>
+                <p class="subtitle-sm" style="margin: 4px 0 0;">Filter Min/Max 24h Volume dilewati pada mode ini; filter ATR% &amp; Risk Guard tetap berlaku.</p>
               </div>
               <label class="field-block-label">
                 Active Strategies
@@ -1146,6 +1178,14 @@
           <div class="confirm-scan-row">
             <span class="subtitle-sm">Model AI Aktif</span>
             <strong id="confirm-scan-llm">-</strong>
+          </div>
+          <div class="confirm-scan-row">
+            <span class="subtitle-sm">Mode Pair Scan</span>
+            <div id="confirm-scan-pair-mode">-</div>
+          </div>
+          <div id="confirm-scan-pairs-row" class="confirm-scan-row">
+            <span class="subtitle-sm">Target Pair</span>
+            <div id="confirm-scan-pairs-detail" class="confirm-scan-chips">-</div>
           </div>
           <div class="confirm-scan-row">
             <span class="subtitle-sm">Strategi Aktif</span>

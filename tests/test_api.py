@@ -1138,3 +1138,63 @@ def test_move_sl_to_bep_preserves_status_and_initial_sl(api_client, db_session, 
     assert body_s["status"] == "ENTRY_HIT"
     assert body_s["stop_loss"] == 210.0
     assert body_s["sl_bep_price"] == 198.0
+
+
+def test_scanner_pair_selection_mode_and_mexc_pairs_endpoint(api_client, monkeypatch):
+    from app.web import dashboard
+
+    # Default mode is TOP_N with empty selected_pairs
+    init_cfg = api_client.get("/api/scanner/settings").json()
+    assert init_cfg["pair_selection_mode"] == "TOP_N"
+    assert init_cfg["selected_pairs"] == []
+
+    # Switching to CUSTOM with empty selected_pairs fails with 400
+    bad_custom = api_client.post(
+        "/api/scanner/settings",
+        json={"pair_selection_mode": "CUSTOM", "selected_pairs": []},
+    )
+    assert bad_custom.status_code == 400
+
+    # Valid CUSTOM mode normalizes, uppercases, and deduplicates selected_pairs
+    ok_custom = api_client.post(
+        "/api/scanner/settings",
+        json={
+            "pair_selection_mode": "CUSTOM",
+            "selected_pairs": [" btc_usdt ", "ETH_USDT", "BTC_USDT", "sol_usdt"],
+        },
+    )
+    assert ok_custom.status_code == 200
+    data = ok_custom.json()
+    assert data["pair_selection_mode"] == "CUSTOM"
+    assert data["selected_pairs"] == ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
+
+    # Switch back to TOP_N preserves selected_pairs
+    back_top = api_client.post(
+        "/api/scanner/settings",
+        json={"pair_selection_mode": "TOP_N"},
+    )
+    assert back_top.status_code == 200
+    assert back_top.json()["pair_selection_mode"] == "TOP_N"
+    assert back_top.json()["selected_pairs"] == ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
+
+    # /api/mexc/pairs returns sorted active USDT-M pairs
+    async def fake_contracts(self):
+        return [
+            {"symbol": "LOW_USDT", "quoteCoin": "USDT", "state": 0},
+            {"symbol": "BTC_USDT", "quoteCoin": "USDT", "state": 0},
+        ]
+
+    async def fake_tickers(self):
+        return {
+            "LOW_USDT": {"symbol": "LOW_USDT", "lastPrice": 1.2, "amount24": 100_000, "riseFallRate": 0.02},
+            "BTC_USDT": {"symbol": "BTC_USDT", "lastPrice": 90000.0, "amount24": 500_000_000, "riseFallRate": 0.01},
+        }
+
+    monkeypatch.setattr(dashboard.MexcPublicClient, "get_active_usdt_contracts", fake_contracts)
+    monkeypatch.setattr(dashboard.MexcPublicClient, "get_all_tickers", fake_tickers)
+
+    pairs_resp = api_client.get("/api/mexc/pairs")
+    assert pairs_resp.status_code == 200
+    pairs_data = pairs_resp.json()
+    assert pairs_data["total"] == 2
+    assert [p["symbol"] for p in pairs_data["items"]] == ["BTC_USDT", "LOW_USDT"]

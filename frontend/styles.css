@@ -2123,3 +2123,128 @@ code {
   flex-wrap: wrap;
   gap: 6px;
 }
+
+.pair-mode-radios {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pair-mode-radios .radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.pair-mode-radios .radio-card:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.pair-mode-radios .radio-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.pair-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.pair-picker-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pair-picker-input-row input {
+  flex: 1;
+}
+
+.pair-suggestions {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.pair-suggestion-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pair-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.pair-suggestion-item:hover {
+  background: var(--accent-soft);
+}
+
+.pair-chips-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  min-height: 38px;
+  padding: 8px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.pair-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(24, 119, 242, 0.3);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pair-chip-remove {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.pair-chip-remove:hover {
+  opacity: 1;
+  color: var(--red);
+}

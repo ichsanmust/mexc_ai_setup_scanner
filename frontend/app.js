@@ -164,6 +164,10 @@ const state = {
   setupStrategyFilter: [],
   aiModels: [],
   aiSettings: null,
+  scannerSettings: null,
+  selectedPairs: [],
+  mexcPairsCatalog: [],
+  mexcPairsLoading: false,
   evalFilter: "ALL",
   evalRows: [],
   chart: null,
@@ -489,9 +493,14 @@ function buildScanSettingsHtml(cfg, fallbackStrategy) {
   const btcHtml = btcSnap
     ? `<div><strong>BTC_USDT Market Mover:</strong> Regime <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> (${escapeHtml(btcSnap.overall_bias || "-")}) &bull; Alignment: <b>${escapeHtml(btcSnap.alignment || "-")}</b> &bull; Saran Strategi: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code> (${escapeHtml(btcSnap.suggested_risk_profile || "-")})</div>`
     : "";
+  const pairMode = String(cfg.pair_selection_mode || "TOP_N").toUpperCase();
+  const customPairs = Array.isArray(cfg.selected_pairs) ? cfg.selected_pairs : [];
+  const pairSummary = pairMode === "CUSTOM"
+    ? `Mode Pair: <b>Custom (${customPairs.length} pairs)</b> <code>${escapeHtml(customPairs.slice(0, 8).join(", ") || "-")}${customPairs.length > 8 ? ` +${customPairs.length - 8}` : ""}</code>`
+    : `Top N: <b>${cfg.top_n_pairs ?? "-"}</b>`;
   return `
     <div class="eval-settings-box">
-      <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; Top N: <b>${cfg.top_n_pairs ?? "-"}</b> &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
+      <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; ${pairSummary} &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
       <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></div>
       <div><strong>Filter &amp; Risk:</strong> Profil <b>${escapeHtml(cfg.risk_profile || "CONSERVATIVE")}</b> &bull; Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
       ${btcHtml}
@@ -3040,8 +3049,16 @@ async function loadAIModalData(syncFilterToActiveProvider = false) {
   const cfg = data.settings;
   state.aiModels = data.models || [];
   state.aiSettings = cfg;
+  state.scannerSettings = scannerCfg;
   state.strategies = stratList || [];
   renderStrategyFilterDropdown();
+
+  const pairMode = String(scannerCfg.pair_selection_mode || "TOP_N").toUpperCase();
+  const pairModeRadio = document.querySelector(`input[name="pair_selection_mode"][value="${pairMode}"]`);
+  if (pairModeRadio) pairModeRadio.checked = true;
+  state.selectedPairs = Array.isArray(scannerCfg.selected_pairs) ? [...scannerCfg.selected_pairs] : [];
+  syncPairSelectionModeUI();
+  renderSelectedPairsChips();
 
   const modeVal = scannerCfg.auto_scan_enabled ? "auto" : "manual";
   const modeRadio = document.querySelector(`input[name="scan_mode"][value="${modeVal}"]`);
@@ -3281,6 +3298,158 @@ function parseNumField(id, fallback = null) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getSelectedPairMode() {
+  const checked = document.querySelector('input[name="pair_selection_mode"]:checked');
+  return checked ? checked.value : "TOP_N";
+}
+
+function syncPairSelectionModeUI() {
+  const isCustom = getSelectedPairMode() === "CUSTOM";
+  document.getElementById("cfg-top-n-wrapper")?.classList.toggle("hidden", isCustom);
+  document.getElementById("cfg-custom-pairs-wrapper")?.classList.toggle("hidden", !isCustom);
+  if (isCustom) {
+    ensureMexcPairsCatalog();
+  }
+}
+
+async function ensureMexcPairsCatalog() {
+  if (state.mexcPairsCatalog.length > 0 || state.mexcPairsLoading) return;
+  state.mexcPairsLoading = true;
+  try {
+    const res = await apiRequest("/api/mexc/pairs");
+    state.mexcPairsCatalog = Array.isArray(res.items) ? res.items : [];
+    const searchEl = document.getElementById("cfg-pair-search");
+    if (searchEl && document.activeElement === searchEl) {
+      renderPairSuggestions(searchEl.value);
+    }
+  } catch (_) {
+    // Fallback: user can still type pair symbols manually
+  } finally {
+    state.mexcPairsLoading = false;
+  }
+}
+
+function renderSelectedPairsChips() {
+  const box = document.getElementById("cfg-selected-pairs-chips");
+  const countEl = document.getElementById("cfg-selected-pairs-count");
+  if (countEl) countEl.textContent = String(state.selectedPairs.length);
+  if (!box) return;
+  if (!state.selectedPairs.length) {
+    box.innerHTML = `<span class="subtitle-sm">Belum ada pair dipilih. Ketik di atas untuk menambahkan pair (mis. BTC_USDT).</span>`;
+    return;
+  }
+  box.innerHTML = state.selectedPairs
+    .map(
+      (sym) =>
+        `<span class="pair-chip">${escapeHtml(sym)}<button type="button" class="pair-chip-remove" data-remove-pair="${escapeHtml(sym)}" title="Hapus ${escapeHtml(sym)}">&times;</button></span>`
+    )
+    .join("");
+}
+
+function addSelectedPairSymbol(rawInput) {
+  const tokens = String(rawInput || "")
+    .split(/[\s,;]+/)
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (!tokens.length) return;
+  let added = 0;
+  for (const tok of tokens) {
+    const normalized = tok.includes("_") ? tok : `${tok}_USDT`;
+    if (!state.selectedPairs.includes(normalized)) {
+      if (state.selectedPairs.length >= 100) {
+        showToast("Maksimal 100 pair yang dapat dipilih.", true);
+        break;
+      }
+      state.selectedPairs.push(normalized);
+      added += 1;
+    }
+  }
+  if (added > 0) {
+    renderSelectedPairsChips();
+  }
+}
+
+function renderPairSuggestions(query) {
+  const box = document.getElementById("cfg-pair-suggestions");
+  if (!box) return;
+  const q = String(query || "").trim().toUpperCase();
+  const list = state.mexcPairsCatalog || [];
+  if (!list.length) {
+    box.classList.add("hidden");
+    return;
+  }
+  const filtered = list
+    .filter((item) => !state.selectedPairs.includes(item.symbol))
+    .filter((item) => !q || item.symbol.includes(q))
+    .slice(0, 20);
+  if (!filtered.length) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.innerHTML = filtered
+    .map((item) => {
+      const volM = (Number(item.amount24 || 0) / 1e6).toFixed(1);
+      return `<button type="button" class="pair-suggestion-item" data-pick-pair="${escapeHtml(item.symbol)}"><strong>${escapeHtml(item.symbol)}</strong><span class="subtitle-sm">Vol $${volM}M &bull; $${Number(item.last_price || 0).toLocaleString("en-US", { maximumFractionDigits: 6 })}</span></button>`;
+    })
+    .join("");
+  box.classList.remove("hidden");
+}
+
+function bindPairPickerEvents() {
+  document.querySelectorAll('input[name="pair_selection_mode"]').forEach((el) => {
+    el.addEventListener("change", syncPairSelectionModeUI);
+  });
+  const searchEl = document.getElementById("cfg-pair-search");
+  const sugBox = document.getElementById("cfg-pair-suggestions");
+  if (searchEl) {
+    searchEl.addEventListener("focus", () => {
+      ensureMexcPairsCatalog().then(() => renderPairSuggestions(searchEl.value));
+    });
+    searchEl.addEventListener("input", () => {
+      renderPairSuggestions(searchEl.value);
+    });
+    searchEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addSelectedPairSymbol(searchEl.value);
+        searchEl.value = "";
+        sugBox?.classList.add("hidden");
+      }
+    });
+  }
+  document.getElementById("btn-add-custom-pair")?.addEventListener("click", () => {
+    if (!searchEl) return;
+    addSelectedPairSymbol(searchEl.value);
+    searchEl.value = "";
+    sugBox?.classList.add("hidden");
+  });
+  document.getElementById("btn-clear-selected-pairs")?.addEventListener("click", () => {
+    state.selectedPairs = [];
+    renderSelectedPairsChips();
+  });
+  document.getElementById("cfg-selected-pairs-chips")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-remove-pair]");
+    if (!btn) return;
+    const sym = btn.getAttribute("data-remove-pair");
+    state.selectedPairs = state.selectedPairs.filter((s) => s !== sym);
+    renderSelectedPairsChips();
+  });
+  sugBox?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-pick-pair]");
+    if (!btn) return;
+    const sym = btn.getAttribute("data-pick-pair");
+    addSelectedPairSymbol(sym);
+    if (searchEl) searchEl.value = "";
+    renderPairSuggestions("");
+  });
+  document.addEventListener("click", (e) => {
+    if (!sugBox || !searchEl) return;
+    if (!sugBox.contains(e.target) && e.target !== searchEl) {
+      sugBox.classList.add("hidden");
+    }
+  });
+}
+
 async function saveScannerSettings() {
   const checked = document.querySelector('input[name="scan_mode"]:checked');
   const autoScan = checked ? checked.value === "auto" : true;
@@ -3300,10 +3469,18 @@ async function saveScannerSettings() {
     return;
   }
 
+  const pairSelectionMode = getSelectedPairMode();
+  if (pairSelectionMode === "CUSTOM" && state.selectedPairs.length === 0) {
+    showToast("Pilih minimal 1 pair untuk mode Pilih Pair Manual.", true);
+    return;
+  }
+
   const payload = {
     auto_scan_enabled: autoScan,
     scan_interval_minutes: parseNumField("cfg-scan-interval"),
     tracker_interval_seconds: parseNumField("cfg-tracker-interval"),
+    pair_selection_mode: pairSelectionMode,
+    selected_pairs: state.selectedPairs,
     top_n_pairs: parseNumField("cfg-top-n-pairs"),
     active_strategies: activeStrategies,
     mexc_base_url: document.getElementById("cfg-mexc-base-url").value.trim(),
@@ -3325,7 +3502,11 @@ async function saveScannerSettings() {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    showToast(`Tersimpan: ${saved.scan_mode} • Top ${saved.top_n_pairs} • ${saved.mexc_base_url}`);
+    state.scannerSettings = saved;
+    const pairInfo = saved.pair_selection_mode === "CUSTOM"
+      ? `${(saved.selected_pairs || []).length} Custom Pairs`
+      : `Top ${saved.top_n_pairs}`;
+    showToast(`Tersimpan: ${saved.scan_mode} • ${pairInfo} • ${saved.mexc_base_url}`);
     await Promise.all([loadStrategies(), loadAIModalData(false), loadHealthAndStatus(), loadAnalytics(), loadBtcMarketMover()]);
   } catch (err) {
     showToast(err.message, true);
@@ -4031,18 +4212,54 @@ function wireEvents() {
       return;
     }
     try {
-      await Promise.all([loadStrategies(), loadBtcMarketMover()]);
+      const [, , freshScannerCfg] = await Promise.all([
+        loadStrategies(),
+        loadBtcMarketMover(),
+        apiRequest("/api/scanner/settings"),
+      ]);
+      if (freshScannerCfg) state.scannerSettings = freshScannerCfg;
     } catch (_) {
       // Fallback to currently cached state if refresh fails
     }
     const llmLabel = document.getElementById("active-llm-label")?.textContent || "-";
     const activeStrats = (state.strategies || []).filter((s) => s.is_active);
+    const scannerCfg = state.scannerSettings || {};
+    const pairMode = String(scannerCfg.pair_selection_mode || "TOP_N").toUpperCase();
+    const customPairs = Array.isArray(scannerCfg.selected_pairs) ? scannerCfg.selected_pairs : [];
+
     const llmEl = document.getElementById("confirm-scan-llm");
+    const pairModeEl = document.getElementById("confirm-scan-pair-mode");
+    const pairsDetailEl = document.getElementById("confirm-scan-pairs-detail");
     const stratsEl = document.getElementById("confirm-scan-strategies");
     const btcRow = document.getElementById("confirm-scan-btc-row");
     const btcEl = document.getElementById("confirm-scan-btc");
 
     if (llmEl) llmEl.textContent = llmLabel;
+    if (pairModeEl) {
+      pairModeEl.innerHTML =
+        pairMode === "CUSTOM"
+          ? `<span class="badge badge-open">Custom Pairs (Pilih Manual)</span>`
+          : `<span class="badge badge-neutral">Top N by Volume</span>`;
+    }
+    if (pairsDetailEl) {
+      if (pairMode === "CUSTOM") {
+        if (customPairs.length) {
+          const preview = customPairs.slice(0, 12);
+          const extra = customPairs.length - preview.length;
+          pairsDetailEl.innerHTML =
+            preview.map((sym) => `<span class="badge badge-neutral">${escapeHtml(sym)}</span>`).join("") +
+            (extra > 0 ? `<span class="badge badge-open">+${extra} lainnya (${customPairs.length} total)</span>` : "");
+        } else {
+          pairsDetailEl.innerHTML = `<span class="badge badge-hit-sl">Belum ada pair dipilih di Settings</span>`;
+        }
+      } else {
+        const minVolStr = `$${Number(scannerCfg.min_24h_quote_volume || 0).toLocaleString("en-US")}`;
+        const maxVolStr = Number(scannerCfg.max_24h_quote_volume || 0) > 0
+          ? `$${Number(scannerCfg.max_24h_quote_volume).toLocaleString("en-US")}`
+          : "Unlimited";
+        pairsDetailEl.innerHTML = `<span class="badge badge-neutral">Top ${scannerCfg.top_n_pairs ?? "-"} pairs</span> <span class="subtitle-sm">Vol 24h: ${minVolStr} – ${maxVolStr}</span>`;
+      }
+    }
     if (stratsEl) {
       stratsEl.innerHTML = activeStrats.length
         ? activeStrats
@@ -4116,6 +4333,7 @@ function wireEvents() {
     });
   });
   document.getElementById("btn-save-scanner-settings").addEventListener("click", saveScannerSettings);
+  bindPairPickerEvents();
   document.querySelectorAll('input[name="scan_mode"]').forEach((radio) => {
     radio.addEventListener("change", syncScanIntervalState);
   });

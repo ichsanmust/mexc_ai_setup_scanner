@@ -300,3 +300,71 @@ async def test_pipeline_single_strategy_also_uses_per_strategy_timeframe(db_sess
     assert len(seen_contexts) == 1
     assert seen_contexts[0]["btc"]["htf"]["interval"] == "Min30"
     assert seen_contexts[0]["btc"]["ltf"]["interval"] == "Min5"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_custom_pair_selection_mode_scans_only_selected_pairs(db_session, monkeypatch):
+    db, TestingSessionLocal, _ = db_session
+    key_row = db.query(AppSetting).filter(AppSetting.key == "commandcode_api_key").first()
+    key_row.value = "test-cmd-key"
+    db.add(AppSetting(key="pair_selection_mode", value="CUSTOM"))
+    db.add(AppSetting(key="selected_pairs", value="ARB_USDT, SUI_USDT"))
+    db.commit()
+
+    from app.core import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "SessionLocal", TestingSessionLocal)
+
+    async def fake_contracts(self):
+        return [
+            {"symbol": "BTC_USDT", "quoteCoin": "USDT", "state": 0},
+            {"symbol": "ARB_USDT", "quoteCoin": "USDT", "state": 0},
+            {"symbol": "SUI_USDT", "quoteCoin": "USDT", "state": 0},
+        ]
+
+    async def fake_tickers(self):
+        return {
+            "BTC_USDT": {"symbol": "BTC_USDT", "lastPrice": 90000.0, "amount24": 900_000_000, "fundingRate": 0.0001, "holdVol": 10000},
+            "ARB_USDT": {"symbol": "ARB_USDT", "lastPrice": 1.1, "amount24": 100_000, "fundingRate": 0.0001, "holdVol": 1000},
+            "SUI_USDT": {"symbol": "SUI_USDT", "lastPrice": 3.2, "amount24": 200_000, "fundingRate": 0.0001, "holdVol": 2000},
+        }
+
+    async def fake_get_kline(self, symbol, interval="Min15", limit=250, start_ts=None, end_ts=None):
+        return _make_sample_candles(80)
+
+    analyzed_symbols: list[str] = []
+
+    async def fake_analyze(snapshot, strategy, llm_config, client=None, timeout_seconds=None):
+        analyzed_symbols.append(snapshot["symbol"])
+        return (
+            AISetupDecision(
+                symbol=snapshot["symbol"],
+                strategy_used=strategy,
+                decision="NO_TRADE",
+                market_regime="RANGING",
+                entry_type="NONE",
+                confidence=40,
+                invalidation_reason="N/A",
+                rationale="Custom pair test",
+            ),
+            {"mock": True},
+        )
+
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_active_usdt_contracts", fake_contracts)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_all_tickers", fake_tickers)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_kline", fake_get_kline)
+    monkeypatch.setattr(pipeline_mod, "analyze_market_snapshot", fake_analyze)
+
+    pipe = ScanPipeline()
+    summary = await pipe.run_once(strategies=["TREND_PULLBACK"])
+    assert summary["status"] == "COMPLETED"
+    assert set(analyzed_symbols) == {"ARB_USDT", "SUI_USDT"}
+
+    verify_db = TestingSessionLocal()
+    try:
+        latest_run = verify_db.query(ScanRun).order_by(ScanRun.id.desc()).first()
+        assert latest_run.top_pairs_count == 2
+        assert latest_run.settings_snapshot["pair_selection_mode"] == "CUSTOM"
+        assert latest_run.settings_snapshot["selected_pairs"] == ["ARB_USDT", "SUI_USDT"]
+    finally:
+        verify_db.close()

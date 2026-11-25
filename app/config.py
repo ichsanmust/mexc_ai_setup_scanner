@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     mexc_request_timeout_seconds: float = 15.0
 
     # Scanner & Scheduler
+    pair_selection_mode: str = "TOP_N"
+    selected_pairs: str = ""
     top_n_pairs: int = 30
     htf_interval: str = "Min60"
     ltf_interval: str = "Min15"

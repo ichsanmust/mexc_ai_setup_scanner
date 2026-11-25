@@ -15,6 +15,8 @@ RUNTIME_SETTING_KEYS = [
     "mexc_proxy_url",
     "mexc_max_concurrency",
     "auto_scan_enabled",
+    "pair_selection_mode",
+    "selected_pairs",
     "top_n_pairs",
     "scan_interval_minutes",
     "tracker_interval_seconds",
@@ -66,6 +68,29 @@ def _parse_risk_profile(raw: Optional[str], default: str = "CONSERVATIVE") -> st
     return d if d in {"CONSERVATIVE", "MODERATE", "AGGRESSIVE"} else "CONSERVATIVE"
 
 
+def _parse_pair_selection_mode(raw: Optional[str], default: str = "TOP_N") -> str:
+    val = str(raw or "").strip().upper()
+    if val in {"TOP_N", "CUSTOM"}:
+        return val
+    d = str(default or "TOP_N").strip().upper()
+    return d if d in {"TOP_N", "CUSTOM"} else "TOP_N"
+
+
+def parse_selected_pairs(raw: Optional[str | list[str]]) -> list[str]:
+    """Normalize comma-separated or list pair symbols into deduplicated uppercase list."""
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else str(raw).split(",")
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        sym = str(item or "").strip().upper()
+        if sym and sym not in seen:
+            seen.add(sym)
+            result.append(sym)
+    return result
+
+
 def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
     """Resolve all scanner, MEXC API, LLM runtime, and risk-guard settings from MySQL."""
     rows: dict[str, str] = {}
@@ -98,6 +123,12 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
         "mexc_max_concurrency": _parse_int(rows.get("mexc_max_concurrency"), settings.mexc_max_concurrency, 1, 20),
         "auto_scan_enabled": auto_enabled,
         "scan_mode": "AUTO" if auto_enabled else "MANUAL",
+        "pair_selection_mode": _parse_pair_selection_mode(
+            rows.get("pair_selection_mode"), settings.pair_selection_mode
+        ),
+        "selected_pairs": parse_selected_pairs(
+            rows.get("selected_pairs") if "selected_pairs" in rows else settings.selected_pairs
+        ),
         "top_n_pairs": _parse_int(rows.get("top_n_pairs"), settings.top_n_pairs, 1, 100),
         "scan_interval_minutes": _parse_int(rows.get("scan_interval_minutes"), settings.scan_interval_minutes, 1, 1440),
         "tracker_interval_seconds": _parse_int(
