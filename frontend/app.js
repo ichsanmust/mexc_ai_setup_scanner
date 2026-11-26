@@ -455,20 +455,27 @@ function renderScanRunsList(runs) {
         ? `<span class="badge ${r.status === "FAILED" ? "badge-hit-sl" : "badge-expired"}">Ada Info Error</span>`
         : `<span></span>`;
       const cfg = r.settings_snapshot || null;
-      const cfgLine = cfg
-        ? `<div class="subtitle-sm">${escapeHtml(formatStrategyProfilesSummary(cfg, r.strategy))}</div>`
-        : `<div class="subtitle-sm">Strategi: ${escapeHtml(r.strategy || "-")}</div>`;
+      const profileSummary = cfg
+        ? formatStrategyProfilesSummary(cfg, r.strategy)
+        : `Strategi: ${r.strategy || "-"}`;
+      const cfgLine = `<div class="run-profile" title="${escapeHtml(profileSummary)}">${escapeHtml(profileSummary)}</div>`;
       const btcSnap = cfg && cfg.btc_market_mover ? cfg.btc_market_mover : null;
       const btcLine = btcSnap
-        ? `<div class="subtitle-sm">BTC Mover: <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> (${escapeHtml(btcSnap.overall_bias || "-")}) &bull; Saran: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code></div>`
+        ? `<div class="run-btc">BTC Mover: <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> <span class="muted-sm">(${escapeHtml(btcSnap.overall_bias || "-")})</span> &bull; Saran: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code></div>`
         : "";
       return `
         <div class="scan-run-chip ${cls}">
           <div class="run-top">
-            <strong><button type="button" class="run-id-chip" data-eval-run="${r.id}" title="Lihat detail &amp; settingan Scan Run #${r.id}">#${r.id}</button> &bull; ${timeStr}</strong>
+            <button type="button" class="run-id-chip" data-eval-run="${r.id}" title="Lihat detail &amp; settingan Scan Run #${r.id}">#${r.id}</button>
+            <span class="run-time">${timeStr}</span>
             <span class="badge ${stBadge}">${r.status}</span>
           </div>
-          <div class="subtitle-sm">Pair: ${r.top_pairs_count} | Pre: ${r.prefiltered_count} | AI: ${r.ai_analyzed_count} | Setup: <b>${r.setups_created_count}</b></div>
+          <div class="run-metrics">
+            <div class="run-metric"><span>Pair</span><b>${r.top_pairs_count ?? "-"}</b></div>
+            <div class="run-metric"><span>Pre-filter</span><b>${r.prefiltered_count ?? "-"}</b></div>
+            <div class="run-metric"><span>AI</span><b>${r.ai_analyzed_count ?? "-"}</b></div>
+            <div class="run-metric"><span>Setup</span><b>${r.setups_created_count ?? "-"}</b></div>
+          </div>
           ${cfgLine}
           ${btcLine}
           <div class="scan-run-footer">
@@ -495,21 +502,84 @@ function buildScanSettingsHtml(cfg, fallbackStrategy) {
     ? `$${Number(cfg.max_24h_quote_volume).toLocaleString("en-US")}`
     : "Unlimited";
   const btcSnap = cfg.btc_market_mover || null;
-  const btcHtml = btcSnap
-    ? `<div><strong>BTC_USDT Market Mover:</strong> Regime <b>${escapeHtml(btcSnap.overall_regime || "-")}</b> (${escapeHtml(btcSnap.overall_bias || "-")}) &bull; Alignment: <b>${escapeHtml(btcSnap.alignment || "-")}</b> &bull; Saran Strategi: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code> (${escapeHtml(btcSnap.suggested_risk_profile || "-")})</div>`
+  const btcItem = btcSnap
+    ? `<div class="eval-setting-item">
+          <span class="eval-setting-label">BTC Market Mover</span>
+          <span class="eval-setting-value">${escapeHtml(btcSnap.overall_regime || "-")} <span class="muted-sm">(${escapeHtml(btcSnap.overall_bias || "-")})</span></span>
+          <span class="eval-setting-sub">Alignment: ${escapeHtml(btcSnap.alignment || "-")} &bull; Saran: <code>${escapeHtml((btcSnap.suggested_strategies || []).join(", ") || "-")}</code> (${escapeHtml(btcSnap.suggested_risk_profile || "-")})</span>
+        </div>`
     : "";
   const pairMode = String(cfg.pair_selection_mode || "TOP_N").toUpperCase();
   const customPairs = Array.isArray(cfg.selected_pairs) ? cfg.selected_pairs : [];
-  const pairSummary = pairMode === "CUSTOM"
-    ? `Mode Pair: <b>Custom (${customPairs.length} pairs)</b> <code>${escapeHtml(customPairs.slice(0, 8).join(", ") || "-")}${customPairs.length > 8 ? ` +${customPairs.length - 8}` : ""}</code>`
-    : `Top N: <b>${cfg.top_n_pairs ?? "-"}</b>`;
+  const pairItem = pairMode === "CUSTOM"
+    ? `<div class="eval-setting-item">
+          <span class="eval-setting-label">Pemilihan Pair</span>
+          <span class="eval-setting-value">Custom (${customPairs.length} pair)</span>
+          <span class="eval-setting-sub"><code>${escapeHtml(customPairs.slice(0, 8).join(", ") || "-")}${customPairs.length > 8 ? ` +${customPairs.length - 8}` : ""}</code></span>
+        </div>`
+    : `<div class="eval-setting-item">
+          <span class="eval-setting-label">Pemilihan Pair</span>
+          <span class="eval-setting-value">Top ${cfg.top_n_pairs ?? "-"} pair</span>
+        </div>`;
+  const item = (label, value, sub = "") => `
+      <div class="eval-setting-item">
+        <span class="eval-setting-label">${label}</span>
+        <span class="eval-setting-value">${value}</span>
+        ${sub ? `<span class="eval-setting-sub">${sub}</span>` : ""}
+      </div>`;
   return `
     <div class="eval-settings-box">
-      <div><strong>Settingan Scan Dipakai:</strong> Mode <b>${escapeHtml(cfg.scan_mode || "-")}</b> &bull; ${pairSummary} &bull; Interval Scan: <b>${cfg.scan_interval_minutes ?? "-"}m</b> &bull; Tracker: <b>${cfg.tracker_interval_seconds ?? "-"}s</b> &bull; Strategi: <code>${escapeHtml(stratLabel)}</code></div>
-      <div><strong>Profil Per-Strategi:</strong> <code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></div>
-      <div><strong>Filter &amp; Risk:</strong> Profil <b>${escapeHtml(cfg.risk_profile || "CONSERVATIVE")}</b> &bull; Vol 24h: <b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b> &bull; ATR: <b>${cfg.min_atr_pct ?? "-"}%–${cfg.max_atr_pct ?? "-"}%</b> &bull; Min Conf: <b>${cfg.min_confidence ?? "-"}%</b> &bull; MEXC: <code>${escapeHtml(cfg.mexc_base_url || "-")}</code> &bull; LLM: Timeout ${cfg.llm_timeout_seconds ?? "-"}s / Concurrency ${cfg.llm_max_concurrency ?? "-"} / MaxTok ${cfg.llm_max_tokens ?? "-"}</div>
-      ${btcHtml}
+      <button type="button" class="eval-settings-toggle" data-eval-settings-toggle aria-expanded="false">
+        <span class="eval-settings-toggle-title">
+          <span class="eval-settings-caret" aria-hidden="true"></span>
+          Settingan Scan Dipakai
+        </span>
+        <span class="eval-settings-toggle-hint">Tampilkan</span>
+      </button>
+      <div class="eval-settings-content hidden" data-eval-settings-content>
+        <div class="eval-settings-grid">
+          ${item("Mode Scan", escapeHtml(cfg.scan_mode || "-"))}
+          ${pairItem}
+          ${item("Interval Scan", `<b>${cfg.scan_interval_minutes ?? "-"}m</b>`)}
+          ${item("Tracker", `<b>${cfg.tracker_interval_seconds ?? "-"}s</b>`)}
+          ${item("Strategi Aktif", `<code>${escapeHtml(stratLabel)}</code>`)}
+          ${item("Profil Risiko", `<b>${escapeHtml(cfg.risk_profile || "CONSERVATIVE")}</b>`)}
+          ${item("Volume 24h", `<b>$${Number(cfg.min_24h_quote_volume || 0).toLocaleString("en-US")}</b> – <b>${maxVolStr}</b>`)}
+          ${item("ATR Range", `<b>${cfg.min_atr_pct ?? "-"}% – ${cfg.max_atr_pct ?? "-"}%</b>`)}
+          ${item("Min Confidence", `<b>${cfg.min_confidence ?? "-"}%</b>`)}
+          ${item("MEXC Base URL", `<code>${escapeHtml(cfg.mexc_base_url || "-")}</code>`)}
+          ${item("LLM", `Timeout ${cfg.llm_timeout_seconds ?? "-"}s &bull; Concurrency ${cfg.llm_max_concurrency ?? "-"} &bull; MaxTok ${cfg.llm_max_tokens ?? "-"}`)}
+          ${btcItem}
+        </div>
+        <div class="eval-settings-profiles">
+          <span class="eval-setting-label">Profil Per-Strategi</span>
+          <span class="eval-setting-value"><code>${escapeHtml(formatStrategyProfilesSummary(cfg, fallbackStrategy))}</code></span>
+        </div>
+      </div>
     </div>`;
+}
+
+function setEvalSettingsExpanded(toggle, content, expanded) {
+  content.classList.toggle("hidden", !expanded);
+  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  toggle.classList.toggle("open", expanded);
+  const hint = toggle.querySelector(".eval-settings-toggle-hint");
+  if (hint) hint.textContent = expanded ? "Sembunyikan" : "Tampilkan";
+}
+
+function bindEvalSettingsToggle() {
+  const summary = document.getElementById("eval-modal-summary");
+  if (!summary) return;
+  const toggle = summary.querySelector("[data-eval-settings-toggle]");
+  const content = summary.querySelector("[data-eval-settings-content]");
+  if (!toggle || !content) return;
+  const expanded = state.evalSettingsExpanded === true;
+  setEvalSettingsExpanded(toggle, content, expanded);
+  toggle.addEventListener("click", () => {
+    const willShow = content.classList.contains("hidden");
+    state.evalSettingsExpanded = willShow;
+    setEvalSettingsExpanded(toggle, content, willShow);
+  });
 }
 
 function resolveSetupStrategyMeta(setup) {
@@ -571,13 +641,19 @@ async function fetchAndRenderScanEvaluations(runId, { preserveFilter = false } =
   const startedTxt = r.started_at ? formatJakartaDateTime(r.started_at, true) : "-";
   const finishedTxt = r.finished_at ? formatJakartaDateTime(r.finished_at, true) : "-";
   document.getElementById("eval-modal-summary").innerHTML = `
-    <div><strong>Status:</strong> ${r.status} &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
-    <div><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
-    <div><strong>Ringkasan:</strong> Top Pair: ${r.top_pairs_count} | Lolos Pre-filter: ${r.prefiltered_count} | Dianalisis AI: ${r.ai_analyzed_count} | Setup Masuk: <b>${r.setups_created_count}</b></div>
+    <div class="eval-summary-row"><strong>Status:</strong> <span class="badge ${r.status === "FAILED" ? "badge-hit-sl" : r.status === "COMPLETED" ? "badge-hit-tp" : "badge-open"}">${r.status}</span> &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
+    <div class="eval-summary-row"><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
+    <div class="eval-summary-metrics">
+      <div class="eval-metric"><span>Top Pair</span><b>${r.top_pairs_count ?? "-"}</b></div>
+      <div class="eval-metric"><span>Lolos Pre-filter</span><b>${r.prefiltered_count ?? "-"}</b></div>
+      <div class="eval-metric"><span>Dianalisis AI</span><b>${r.ai_analyzed_count ?? "-"}</b></div>
+      <div class="eval-metric"><span>Setup Masuk</span><b>${r.setups_created_count ?? "-"}</b></div>
+    </div>
     ${settingsHtml}
-    ${setupNames ? `<div><strong>Setup Terbuat:</strong> ${escapeHtml(setupNames)}</div>` : ""}
-    ${r.error_message ? `<div class="text-red"><strong>Error:</strong> ${escapeHtml(r.error_message)}</div>` : ""}
+    ${setupNames ? `<div class="eval-summary-row"><strong>Setup Terbuat:</strong> ${escapeHtml(setupNames)}</div>` : ""}
+    ${r.error_message ? `<div class="eval-summary-row text-red"><strong>Error:</strong> ${escapeHtml(r.error_message)}</div>` : ""}
   `;
+  bindEvalSettingsToggle();
   const setupRows = (data.setups || []).map((s) => ({
     is_setup: true,
     setup_obj: s,
@@ -601,6 +677,7 @@ async function fetchAndRenderScanEvaluations(runId, { preserveFilter = false } =
 
 async function openScanEvaluationsModal(runId) {
   stopEvalModalPolling();
+  state.evalSettingsExpanded = false;
   state.evalModalRunId = runId;
   const modal = document.getElementById("scan-eval-modal");
   modal.classList.remove("hidden");
