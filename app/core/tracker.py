@@ -126,12 +126,27 @@ def evaluate_setup_trace(
     since_ts = _to_utc_ts(since_dt)
     bep_ts = _to_utc_ts(setup.sl_bep_at) if setup.sl_bep_at else since_ts
 
+    # After a manual reset-to-OPEN (or an EXTENDED re-arm), the setup must be re-entered
+    # from the reset moment: a historical TP/SL touch must not resolve it again.
+    reset_ts = since_ts if is_reactivated else None
+    previous_missed_tp_dt = setup.missed_tp_at
+    previous_missed_tp_price = (
+        float(setup.missed_tp_price) if setup.missed_tp_price is not None else None
+    )
+
+    def _prev_missed_tp_valid() -> bool:
+        if previous_missed_tp_dt is None:
+            return False
+        return reset_ts is None or _to_utc_ts(previous_missed_tp_dt) >= reset_ts
+
     for candle in sorted(candles_since_open, key=lambda c: int(c["time"])):
         c_ts = int(candle["time"])
         if is_reactivated or candle_interval != "Min1":
             if c_ts < since_ts:
                 continue
         elif c_ts < since_ts - 60:
+            continue
+        if reset_ts is not None and c_ts < reset_ts:
             continue
         c_dt = _from_utc_ts(c_ts)
         high = float(candle["high"])
@@ -149,8 +164,12 @@ def evaluate_setup_trace(
             if not entry_touched and high >= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
-            hit_bep = bep_active and low <= bep_price
-            hit_sl = low <= sl
+            if not entry_touched and _prev_missed_tp_valid() and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = previous_missed_tp_dt
+                detected_missed_tp_price = previous_missed_tp_price or tp
+            # Entry-first: SL/BEP/TP only count once price has re-touched Entry after the reset.
+            hit_bep = bep_active and low <= bep_price and entry_touched
+            hit_sl = low <= sl and entry_touched
             # On coarse candles (> Min1), don't assume LIMIT entry filled before TP inside the same bar
             allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
             hit_tp = high >= tp and allow_tp
@@ -199,8 +218,12 @@ def evaluate_setup_trace(
             if not entry_touched and low <= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = c_dt
                 detected_missed_tp_price = tp
-            hit_bep = bep_active and high >= bep_price
-            hit_sl = high >= sl
+            if not entry_touched and _prev_missed_tp_valid() and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = previous_missed_tp_dt
+                detected_missed_tp_price = previous_missed_tp_price or tp
+            # Entry-first: SL/BEP/TP only count once price has re-touched Entry after the reset.
+            hit_bep = bep_active and high >= bep_price and entry_touched
+            hit_sl = high >= sl and entry_touched
             allow_tp = entry_touched and not (entered_this_candle and candle_interval != "Min1")
             hit_tp = low <= tp and allow_tp
             if hit_bep:
@@ -243,21 +266,13 @@ def evaluate_setup_trace(
     # Check live ticker lastPrice (catches movement between candle buckets)
     if last_price is not None and last_price > 0:
         if direction == "LONG":
-            if bep_price is not None and last_price <= bep_price:
-                return {
-                    "new_status": "BEP",
-                    "resolved_price": last_price,
-                    "resolved_dt": current_time,
-                    "entry_hit_dt": detected_entry_dt,
-                    "missed_tp_dt": detected_missed_tp_dt,
-                    "missed_tp_price": detected_missed_tp_price,
-                }
-            if last_price <= sl:
+            sl_before_entry = last_price <= sl and not entry_touched and detected_entry_dt is None
+            if sl_before_entry:
                 return {
                     "new_status": "HIT_SL",
                     "resolved_price": last_price,
                     "resolved_dt": current_time,
-                    "entry_hit_dt": detected_entry_dt,
+                    "entry_hit_dt": None,
                     "missed_tp_dt": detected_missed_tp_dt,
                     "missed_tp_price": detected_missed_tp_price,
                 }
@@ -267,6 +282,27 @@ def evaluate_setup_trace(
             if not entry_touched and last_price >= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = current_time
                 detected_missed_tp_price = last_price
+            if not entry_touched and _prev_missed_tp_valid() and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = previous_missed_tp_dt
+                detected_missed_tp_price = previous_missed_tp_price or tp
+            if bep_price is not None and last_price <= bep_price and entry_touched:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if last_price <= sl and entry_touched:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if last_price >= tp and entry_touched:
                 return {
                     "new_status": "HIT_TP",
@@ -277,21 +313,13 @@ def evaluate_setup_trace(
                     "missed_tp_price": detected_missed_tp_price,
                 }
         elif direction == "SHORT":
-            if bep_price is not None and last_price >= bep_price:
-                return {
-                    "new_status": "BEP",
-                    "resolved_price": last_price,
-                    "resolved_dt": current_time,
-                    "entry_hit_dt": detected_entry_dt,
-                    "missed_tp_dt": detected_missed_tp_dt,
-                    "missed_tp_price": detected_missed_tp_price,
-                }
-            if last_price >= sl:
+            sl_before_entry = last_price >= sl and not entry_touched and detected_entry_dt is None
+            if sl_before_entry:
                 return {
                     "new_status": "HIT_SL",
                     "resolved_price": last_price,
                     "resolved_dt": current_time,
-                    "entry_hit_dt": detected_entry_dt,
+                    "entry_hit_dt": None,
                     "missed_tp_dt": detected_missed_tp_dt,
                     "missed_tp_price": detected_missed_tp_price,
                 }
@@ -301,6 +329,27 @@ def evaluate_setup_trace(
             if not entry_touched and last_price <= tp and detected_missed_tp_dt is None:
                 detected_missed_tp_dt = current_time
                 detected_missed_tp_price = last_price
+            if not entry_touched and _prev_missed_tp_valid() and detected_missed_tp_dt is None:
+                detected_missed_tp_dt = previous_missed_tp_dt
+                detected_missed_tp_price = previous_missed_tp_price or tp
+            if bep_price is not None and last_price >= bep_price and entry_touched:
+                return {
+                    "new_status": "BEP",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
+            if last_price >= sl and entry_touched:
+                return {
+                    "new_status": "HIT_SL",
+                    "resolved_price": last_price,
+                    "resolved_dt": current_time,
+                    "entry_hit_dt": detected_entry_dt,
+                    "missed_tp_dt": detected_missed_tp_dt,
+                    "missed_tp_price": detected_missed_tp_price,
+                }
             if last_price <= tp and entry_touched:
                 return {
                     "new_status": "HIT_TP",

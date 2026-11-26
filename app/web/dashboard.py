@@ -1194,6 +1194,19 @@ async def update_setup_manual_status(
         ext_info = _extend_if_expired()
         ext_txt = f" (+{ext_info['extend_hours']}j expiry strategi)" if ext_info else ""
         _append_hist("RESET_OPEN", float(row.entry_price), f"Reset manual ke OPEN untuk pantau ulang{ext_txt}", ext_info)
+        # Re-arm tracker from the reset moment: past TP/SL touches must not resolve the setup.
+        row.status_history = [
+            *ensure_created_history(row),
+            {
+                "at": now.isoformat(),
+                "event": "TRACKING_REARMED",
+                "status": "OPEN",
+                "price": round(eff_entry, 8),
+                "stop_loss": float(row.stop_loss),
+                "take_profit": float(row.take_profit),
+                "note": "Tracker dihitung ulang dari titik reset; Entry harus tersentuh lagi sebelum TP/SL dihitung.",
+            },
+        ]
     elif body.status == "ENTRY_HIT":
         row.entry_hit_at = row.entry_hit_at or now
         row.resolved_price = None

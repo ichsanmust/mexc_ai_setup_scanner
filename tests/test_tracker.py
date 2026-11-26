@@ -549,3 +549,89 @@ def test_tracker_auto_hits_bep_after_sl_bep_at():
     )
     assert st2 == "BEP"
     assert res2 == 100.5
+
+
+def test_reset_open_rearms_entry_first_and_ignores_historical_tp_touch():
+    """Reset ke OPEN (pantau ulang) must not inherit the old TP touch; Entry must be touched again."""
+    from datetime import datetime, timezone
+
+    t0 = datetime(2026, 4, 1, 10, 0, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    reset_at = datetime(2026, 4, 1, 11, 0, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    t0_ts = int(t0.replace(tzinfo=timezone.utc).timestamp())
+    reset_ts = int(reset_at.replace(tzinfo=timezone.utc).timestamp())
+
+    setup = _make_custom_setup(decision="LONG", status="OPEN", entry=100.0, sl=95.0, tp=110.0, created_at=t0)
+    setup.missed_tp_at = t0 + timedelta(minutes=5)
+    setup.missed_tp_price = Decimal("110.0")
+    setup.status_history = [
+        {"at": reset_at.isoformat(), "event": "RESET_OPEN", "status": "OPEN", "price": 100.0,
+         "stop_loss": 95.0, "take_profit": 110.0, "note": "Reset manual ke OPEN untuk pantau ulang"},
+    ]
+
+    # Stale candle from before the reset is ignored, and the old TP-before-entry must not re-fire.
+    st, res = evaluate_setup_against_market(
+        setup,
+        last_price=104.0,
+        candles_since_open=[{"time": t0_ts + 300, "open": 105.0, "high": 111.0, "low": 104.0}],
+        now=reset_at + timedelta(minutes=1),
+        candle_interval="Min1",
+    )
+    assert st is None
+    assert res is None
+
+    # Price above TP but Entry still untouched after reset -> no HIT_TP.
+    st2, res2 = evaluate_setup_against_market(
+        setup,
+        last_price=112.0,
+        candles_since_open=[{"time": reset_ts + 60, "open": 108.0, "high": 112.0, "low": 107.0}],
+        now=reset_at + timedelta(minutes=2),
+        candle_interval="Min1",
+    )
+    assert st2 is None
+    assert res2 is None
+
+    # Entry touched after reset -> ENTRY_HIT, then TP resolves normally.
+    st3, _ = evaluate_setup_against_market(
+        setup,
+        last_price=100.0,
+        candles_since_open=[{"time": reset_ts + 60, "open": 102.0, "high": 103.0, "low": 99.5}],
+        now=reset_at + timedelta(minutes=2),
+        candle_interval="Min1",
+    )
+    assert st3 == "ENTRY_HIT"
+
+    setup.status = "ENTRY_HIT"
+    setup.entry_hit_at = reset_at + timedelta(minutes=2)
+    st4, res4 = evaluate_setup_against_market(
+        setup,
+        last_price=110.5,
+        candles_since_open=[{"time": reset_ts + 180, "open": 101.0, "high": 110.5, "low": 100.5}],
+        now=reset_at + timedelta(minutes=4),
+        candle_interval="Min1",
+    )
+    assert st4 == "HIT_TP"
+    assert res4 == 110.0
+
+
+def test_reset_open_ignores_historical_sl_before_entry():
+    """SL that already happened before a reset must not re-close the setup on stale candles."""
+    from datetime import datetime, timezone
+
+    t0 = datetime(2026, 4, 2, 9, 0, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    reset_at = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    t0_ts = int(t0.replace(tzinfo=timezone.utc).timestamp())
+
+    setup = _make_custom_setup(decision="LONG", status="OPEN", entry=100.0, sl=95.0, tp=110.0, created_at=t0)
+    setup.status_history = [
+        {"at": reset_at.isoformat(), "event": "RESET_OPEN", "status": "OPEN", "price": 100.0,
+         "stop_loss": 95.0, "take_profit": 110.0, "note": "Reset manual ke OPEN untuk pantau ulang"},
+    ]
+
+    st, _ = evaluate_setup_against_market(
+        setup,
+        last_price=104.0,
+        candles_since_open=[{"time": t0_ts + 600, "open": 98.0, "high": 99.0, "low": 94.0}],
+        now=reset_at + timedelta(minutes=1),
+        candle_interval="Min1",
+    )
+    assert st is None
