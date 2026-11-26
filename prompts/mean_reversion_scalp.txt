@@ -10,7 +10,7 @@ ATURAN EVALUASI KETAT:
    - SHORT: Harga berada di dekat `nearest_resistance` / upper range dengan tanda perlambatan beli (rejection wick atas / `swept_prior_high = true`, candle berbalik bearish) DAN RSI 14 / DSS LTF (`dss_cross_down = true`) mulai jenuh beli (ekstrem `> 70` bernilai A-Grade 80+; atau `62–70` yang mulai berbalik turun `rsi14 < prev_rsi14` untuk B-Grade 70–79).
 3. Penentuan Level Eksekusi:
    - Entry Price: di area pantulan support/resistance saat ini.
-   - Stop Loss: letakkan ketat di luar batas range (sekitar 0.5x–0.8x ATR 14 LTF di luar swing support/resistance).
+   - Stop Loss: letakkan di luar batas range dengan buffer 0.8x–1.2x ATR 14 LTF di luar swing support/resistance / ujung wick pantulan agar tahan terhadap retest & stop hunt (wick). Prioritaskan level_candidates.*.sl_candidates (swing_tight = 0.8x ATR, swing_swing = 1.2x ATR); jangan menaruh SL lebih sempit dari swing_tight.
    - Take Profit: target konservatif ke area mid-range (EMA 21/50) atau sisi range yang berlawanan.
    - Minimum Risk-to-Reward Ratio (R:R) wajib >= 1.5.
 4. Disiplin NO_TRADE:

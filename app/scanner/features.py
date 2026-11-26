@@ -316,11 +316,16 @@ def _build_level_candidates(
     htf_summary: dict[str, Any],
     ltf_summary: dict[str, Any],
     last_price: float,
+    is_scalp: bool = False,
 ) -> dict[str, Any]:
     """Pre-compute deterministic SL/TP candidates and resulting R:R ratios from market_price."""
     ltf_atr = float(ltf_summary.get("atr14") or 0.0)
     htf_atr = float(htf_summary.get("atr14") or 0.0)
     ref = last_price if last_price > 0 else float(ltf_summary.get("close") or 0.0)
+
+    # Scalp buffer: 0.8-1.2x ATR, Default/Swing: 0.5-1.0x ATR
+    atr_tight = 0.8 if is_scalp else 0.5
+    atr_swing = 1.2 if is_scalp else 1.0
 
     def _rr(entry: float, sl: float, tp: float) -> Optional[float]:
         risk = abs(entry - sl)
@@ -328,14 +333,14 @@ def _build_level_candidates(
             return None
         return round(abs(tp - entry) / risk, 2)
 
-    long_sl_tight = round(float(ltf_summary["recent_swing_low"]) - 0.5 * ltf_atr, 8)
-    long_sl_swing = round(float(ltf_summary["recent_swing_low"]) - 1.0 * ltf_atr, 8)
+    long_sl_tight = round(float(ltf_summary["recent_swing_low"]) - atr_tight * ltf_atr, 8)
+    long_sl_swing = round(float(ltf_summary["recent_swing_low"]) - atr_swing * ltf_atr, 8)
     long_tp_1 = round(float(ltf_summary["nearest_resistance"]), 8)
     long_tp_2 = round(float(htf_summary["nearest_resistance"]), 8)
     long_tp_3 = round(ref + 3.0 * htf_atr, 8) if htf_atr > 0 else long_tp_2
 
-    short_sl_tight = round(float(ltf_summary["recent_swing_high"]) + 0.5 * ltf_atr, 8)
-    short_sl_swing = round(float(ltf_summary["recent_swing_high"]) + 1.0 * ltf_atr, 8)
+    short_sl_tight = round(float(ltf_summary["recent_swing_high"]) + atr_tight * ltf_atr, 8)
+    short_sl_swing = round(float(ltf_summary["recent_swing_high"]) + atr_swing * ltf_atr, 8)
     short_tp_1 = round(float(ltf_summary["nearest_support"]), 8)
     short_tp_2 = round(float(htf_summary["nearest_support"]), 8)
     short_tp_3 = round(max(1e-8, ref - 3.0 * htf_atr), 8) if htf_atr > 0 else short_tp_2
@@ -344,9 +349,9 @@ def _build_level_candidates(
         "reference_price": round(ref, 8),
         "long": {
             "entry_limit_ema21": ltf_summary["ema21"],
-            "sl_candidates": {"swing_05atr": long_sl_tight, "swing_10atr": long_sl_swing},
+            "sl_candidates": {"swing_tight": long_sl_tight, "swing_swing": long_sl_swing},
             "tp_candidates": {"ltf_res": long_tp_1, "htf_res": long_tp_2, "htf_3atr": long_tp_3},
-            "rr_from_market_vs_swing_05atr": {
+            "rr_from_market_vs_sl": {
                 "tp_ltf_res": _rr(ref, long_sl_tight, long_tp_1) if long_sl_tight < ref < long_tp_1 else None,
                 "tp_htf_res": _rr(ref, long_sl_tight, long_tp_2) if long_sl_tight < ref < long_tp_2 else None,
                 "tp_htf_3atr": _rr(ref, long_sl_tight, long_tp_3) if long_sl_tight < ref < long_tp_3 else None,
@@ -354,9 +359,9 @@ def _build_level_candidates(
         },
         "short": {
             "entry_limit_ema21": ltf_summary["ema21"],
-            "sl_candidates": {"swing_05atr": short_sl_tight, "swing_10atr": short_sl_swing},
+            "sl_candidates": {"swing_tight": short_sl_tight, "swing_swing": short_sl_swing},
             "tp_candidates": {"ltf_sup": short_tp_1, "htf_sup": short_tp_2, "htf_3atr": short_tp_3},
-            "rr_from_market_vs_swing_05atr": {
+            "rr_from_market_vs_sl": {
                 "tp_ltf_sup": _rr(ref, short_sl_tight, short_tp_1) if short_tp_1 < ref < short_sl_tight else None,
                 "tp_htf_sup": _rr(ref, short_sl_tight, short_tp_2) if short_tp_2 < ref < short_sl_tight else None,
                 "tp_htf_3atr": _rr(ref, short_sl_tight, short_tp_3) if short_tp_3 < ref < short_sl_tight else None,
@@ -462,7 +467,13 @@ def prefilter_and_build_snapshot(
         "market_ticker": market_ticker,
         "htf_1h": htf_summary,
         "ltf_15m": ltf_summary,
-        "level_candidates": _build_level_candidates(htf_summary, ltf_summary, last_price),
+        "level_candidates": _build_level_candidates(
+            htf_summary,
+            ltf_summary,
+            last_price,
+            # LTF <= Min5 dipakai strategi scalp: wick/stop-hunt lebih sering, SL butuh buffer ATR lebih lebar.
+            is_scalp=INTERVAL_SECONDS_MAP.get(ltf_iv, 900) <= 300,
+        ),
     }
     if market_context is not None:
         snapshot["market_context"] = market_context

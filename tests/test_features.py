@@ -208,9 +208,32 @@ def test_snapshot_includes_structure_dss_cross_and_oi_normalization():
 
     lc = snap["level_candidates"]
     assert lc["reference_price"] == 116.5
-    assert "swing_05atr" in lc["long"]["sl_candidates"]
+    assert "swing_tight" in lc["long"]["sl_candidates"]
+    assert "swing_swing" in lc["long"]["sl_candidates"]
     assert "htf_res" in lc["long"]["tp_candidates"]
-    assert "rr_from_market_vs_swing_05atr" in lc["short"]
+    assert "rr_from_market_vs_sl" in lc["short"]
+
+
+def test_level_candidates_use_wider_sl_buffer_for_scalp():
+    from app.scanner.features import _build_level_candidates
+
+    htf = {"atr14": 2.0, "nearest_resistance": 120.0, "nearest_support": 100.0}
+    ltf = {
+        "atr14": 1.0,
+        "close": 110.0,
+        "ema21": 110.0,
+        "recent_swing_low": 108.0,
+        "recent_swing_high": 112.0,
+        "nearest_resistance": 115.0,
+        "nearest_support": 105.0,
+    }
+    normal = _build_level_candidates(htf, ltf, 110.0, is_scalp=False)
+    scalp = _build_level_candidates(htf, ltf, 110.0, is_scalp=True)
+
+    assert normal["long"]["sl_candidates"] == {"swing_tight": 107.5, "swing_swing": 107.0}
+    assert scalp["long"]["sl_candidates"] == {"swing_tight": 107.2, "swing_swing": 106.8}
+    assert normal["short"]["sl_candidates"] == {"swing_tight": 112.5, "swing_swing": 113.0}
+    assert scalp["short"]["sl_candidates"] == {"swing_tight": 112.8, "swing_swing": 113.2}
 
 
 def test_prescreen_for_strategy_rules():
