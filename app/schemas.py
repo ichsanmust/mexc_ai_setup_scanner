@@ -178,6 +178,8 @@ class StrategyAnalyticsItem(BaseModel):
     tp_no_entry_count: int = 0
     bep_count: int = 0
     expired_count: int
+    expired_clean_count: int = 0
+    expired_after_missed_tp_count: int = 0
     manual_taken_count: int
     manual_skipped_count: int
     decided_count: int
@@ -205,6 +207,8 @@ class AnalyticsSummaryResponse(BaseModel):
     total_tp_no_entry_count: int = 0
     total_bep_count: int = 0
     total_expired_count: int = 0
+    total_expired_clean_count: int = 0
+    total_expired_after_missed_tp_count: int = 0
     total_skipped_count: int = 0
     overall_win_rate_pct: float
     overall_avg_rr: float

@@ -1047,7 +1047,12 @@ async function loadAnalytics() {
   document.getElementById("kpi-total").textContent = data.total_setups;
   const totalSub = document.getElementById("kpi-total-sub");
   if (totalSub) {
-    totalSub.innerHTML = `Avg R:R: <b>${data.overall_avg_rr.toFixed(2)}x</b> &bull; BEP: <b>${data.total_bep_count ?? 0}</b> &bull; Expired: <b>${data.total_expired_count ?? 0}</b> &bull; Skip: <b>${data.total_skipped_count ?? 0}</b>`;
+    const expClean = data.total_expired_clean_count ?? 0;
+    const expMissed = data.total_expired_after_missed_tp_count ?? 0;
+    totalSub.innerHTML =
+      `Avg R:R: <b>${data.overall_avg_rr.toFixed(2)}x</b> &bull; BEP: <b>${data.total_bep_count ?? 0}</b> &bull; ` +
+      `Expired: <b>${data.total_expired_count ?? 0}</b> <span class="subtitle-sm">(Biasa:${expClean} / Setelah TP No Entry:${expMissed})</span> &bull; ` +
+      `Skip: <b>${data.total_skipped_count ?? 0}</b>`;
   }
 
   document.getElementById("kpi-open").textContent = data.open_count;
@@ -1172,7 +1177,9 @@ async function loadAnalytics() {
           <td>
             <span class="badge badge-bep" title="BEP = Break-Even Point (Kena SL-BEP, 0 Loss, tidak masuk hitungan Win Rate)" style="cursor:help;">BEP: ${s.bep_count ?? 0}</span>
             <div class="subtitle-sm">
-              <span title="Exp = EXPIRED (Melewati batas waktu Expiry tanpa menyentuh TP/SL)" style="cursor:help;">Exp: ${s.expired_count}</span> &bull;
+              <span title="Exp = EXPIRED total (Biasa + setelah TP No Entry)" style="cursor:help;">Exp: ${s.expired_count}</span> &bull;
+              <span title="Expired tanpa pernah menyentuh Entry maupun TP" style="cursor:help;">Biasa: ${s.expired_clean_count ?? 0}</span> &bull;
+              <span title="Expired setelah harga sempat tembus TP tanpa menyentuh Entry" style="cursor:help;">TP No Entry: ${s.expired_after_missed_tp_count ?? 0}</span> &bull;
               <span title="Skip = MANUAL_SKIPPED (Ditandai manual untuk dilewati)" style="cursor:help;">Skip: ${s.manual_skipped_count}</span>
             </div>
           </td>

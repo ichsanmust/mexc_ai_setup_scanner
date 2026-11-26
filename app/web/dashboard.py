@@ -1337,7 +1337,11 @@ async def get_symbol_chart_data(
 
 def _has_setup_entered(s: TradeSetup) -> bool:
     """Return True only if setup reached entry (system ENTRY_HIT, MARKET order, or manual execution)."""
-    if s.entry_hit_at is not None or s.manual_action_at is not None:
+    if (
+        s.entry_hit_at is not None
+        or s.manual_action_at is not None
+        or s.manual_entry_price is not None
+    ):
         return True
     if s.status in ("ENTRY_HIT", "MANUAL_TAKEN", "CLOSED_MANUAL_TP", "CLOSED_MANUAL_CL"):
         return True
@@ -1377,6 +1381,8 @@ def get_strategy_analytics(
     total_tp_no_entry = 0
     total_bep = 0
     total_exp = 0
+    total_exp_clean = 0
+    total_exp_after_missed_tp = 0
     total_skip = 0
     all_rrs: list[float] = []
 
@@ -1405,6 +1411,15 @@ def get_strategy_analytics(
         )
         bep_c = sum(1 for s in group if s.status == "BEP")
         exp_c = sum(1 for s in group if s.status == "EXPIRED")
+        exp_after_missed_tp_c = sum(
+            1
+            for s in group
+            if s.status == "EXPIRED"
+            and s.missed_tp_at is not None
+            and s.entry_hit_at is None
+            and s.manual_action_at is None
+        )
+        exp_clean_c = exp_c - exp_after_missed_tp_c
         skip_c = sum(1 for s in group if s.status == "MANUAL_SKIPPED")
 
         decided = tp_c + sl_c
@@ -1426,6 +1441,8 @@ def get_strategy_analytics(
         total_tp_no_entry += tp_no_entry_c
         total_bep += bep_c
         total_exp += exp_c
+        total_exp_clean += exp_clean_c
+        total_exp_after_missed_tp += exp_after_missed_tp_c
         total_skip += skip_c
         all_rrs.extend(float(s.risk_reward_ratio) for s in group)
 
@@ -1447,6 +1464,8 @@ def get_strategy_analytics(
                 tp_no_entry_count=tp_no_entry_c,
                 bep_count=bep_c,
                 expired_count=exp_c,
+                expired_clean_count=exp_clean_c,
+                expired_after_missed_tp_count=exp_after_missed_tp_c,
                 manual_taken_count=taken_c,
                 manual_skipped_count=skip_c,
                 decided_count=decided,
@@ -1477,6 +1496,8 @@ def get_strategy_analytics(
         total_tp_no_entry_count=total_tp_no_entry,
         total_bep_count=total_bep,
         total_expired_count=total_exp,
+        total_expired_clean_count=total_exp_clean,
+        total_expired_after_missed_tp_count=total_exp_after_missed_tp,
         total_skipped_count=total_skip,
         overall_win_rate_pct=overall_wr,
         overall_avg_rr=overall_rr,
