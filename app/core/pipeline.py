@@ -367,16 +367,22 @@ class ScanPipeline:
             accepts_max_tokens = "max_tokens" in ai_params
             accepts_min_conf = "min_confidence" in ai_params
             accepts_risk_profile = "risk_profile" in ai_params
+            accepts_client = "client" in ai_params
 
             kline_done = 0
             enqueued = 0
             ai_done = 0
             prefilter_cpu_s = 0.0
+            save_cpu_s = 0.0
             prescreen_skipped = 0
+            ai_analyzed_count = 0
+            setups_created = 0
+            uncommitted = 0
+            ai_errors: list[str] = []
             passed_symbols: set[str] = set()
             snapshot_cache: dict[tuple[str, str, str], tuple[bool, str, dict[str, Any] | None]] = {}
             btc_context_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
-            ai_results: list[tuple[dict[str, Any], str, Any, Any, Optional[Exception]]] = []
+            commit_batch_size = 10
             self._set_progress(
                 scan_run.id,
                 stage="FETCH_KLINES",
@@ -387,8 +393,104 @@ class ScanPipeline:
                 total=total_pairs_n,
             )
 
+            def persist_ai_result(
+                snap: dict[str, Any],
+                strat: str,
+                decision: Any,
+                err: Optional[Exception],
+            ) -> None:
+                """Validate one AI result and stage it in the DB (sync, no awaits => safe on shared session)."""
+                nonlocal ai_analyzed_count, setups_created, uncommitted
+                sym = snap["symbol"]
+                if err is not None or decision is None:
+                    err_str = (str(err).strip() or type(err).__name__) if err is not None else "Empty AI decision"
+                    ai_errors.append(f"{sym} ({strat}): {err_str}")
+                    db.add(
+                        ScanEvaluation(
+                            scan_run_id=scan_run.id,
+                            symbol=sym,
+                            strategy_used=strat,
+                            raw_decision="ERROR",
+                            rejection_reason=err_str[:255],
+                            confidence=None,
+                        )
+                    )
+                else:
+                    ai_analyzed_count += 1
+                    is_valid, normalized, reason = validate_and_guard_setup(
+                        decision,
+                        db=db,
+                        min_confidence=rt_cfg["min_confidence"],
+                        snapshot=snap,
+                        risk_profile=rt_cfg["risk_profile"],
+                    )
+                    if not is_valid:
+                        db.add(
+                            ScanEvaluation(
+                                scan_run_id=scan_run.id,
+                                symbol=sym,
+                                strategy_used=strat,
+                                raw_decision=decision.decision,
+                                rejection_reason=reason[:255],
+                                confidence=decision.confidence,
+                            )
+                        )
+                    else:
+                        now = utcnow()
+                        strat_expiry_hours = profiles.get(strat, {}).get("expiry_hours", settings.setup_expiry_hours)
+                        db.add(
+                            TradeSetup(
+                                scan_run_id=scan_run.id,
+                                symbol=normalized.symbol,
+                                strategy_used=normalized.strategy_used,
+                                decision=normalized.decision,
+                                market_regime=normalized.market_regime,
+                                entry_type=normalized.entry_type,
+                                entry_price=Decimal(f"{normalized.entry_price:.8f}"),
+                                stop_loss=Decimal(f"{normalized.stop_loss:.8f}"),
+                                take_profit=Decimal(f"{normalized.take_profit:.8f}"),
+                                risk_reward_ratio=Decimal(f"{normalized.risk_reward_ratio:.4f}"),
+                                confidence=normalized.confidence,
+                                llm_provider=llm_cfg["provider"],
+                                llm_model=llm_cfg["model_id"],
+                                invalidation_reason=normalized.invalidation_reason,
+                                rationale=normalized.rationale,
+                                status="OPEN",
+                                status_history=[
+                                    {
+                                        "at": now.isoformat(),
+                                        "event": "CREATED",
+                                        "status": "OPEN",
+                                        "price": float(normalized.entry_price),
+                                        "stop_loss": float(normalized.stop_loss),
+                                        "take_profit": float(normalized.take_profit),
+                                        "note": (
+                                            f"Setup dibuat oleh sistem (AI {normalized.entry_type}) — "
+                                            f"Entry: {float(normalized.entry_price):g}, "
+                                            f"SL: {float(normalized.stop_loss):g}, "
+                                            f"TP: {float(normalized.take_profit):g}"
+                                        ),
+                                    }
+                                ],
+                                expires_at=now + timedelta(hours=int(strat_expiry_hours)),
+                                features_snapshot=snap,
+                                ai_payload={
+                                    **normalized.model_dump(),
+                                    "prompt_version": prompt_versions.get(strat.strip().upper()),
+                                },
+                            )
+                        )
+                        # Flush so the duplicate/conflict guard sees this setup for later results.
+                        db.flush()
+                        setups_created += 1
+
+                uncommitted += 1
+                if uncommitted >= commit_batch_size:
+                    db.commit()
+                    uncommitted = 0
+
             async def run_one_ai(snap: dict[str, Any], strat: str) -> None:
-                nonlocal ai_done
+                nonlocal ai_done, save_cpu_s
                 try:
                     kwargs: dict[str, Any] = {
                         "snapshot": snap,
@@ -396,6 +498,8 @@ class ScanPipeline:
                         "llm_config": llm_cfg,
                         "timeout_seconds": rt_cfg["llm_timeout_seconds"],
                     }
+                    if accepts_client:
+                        kwargs["client"] = llm_client
                     if accepts_max_tokens:
                         kwargs["max_tokens"] = rt_cfg["llm_max_tokens"]
                     if accepts_min_conf:
@@ -404,11 +508,21 @@ class ScanPipeline:
                         kwargs["risk_profile"] = rt_cfg["risk_profile"]
                     if accepts_system_prompt:
                         kwargs["system_prompt"] = prompt_map.get(strat.strip().upper())
-                    decision, raw_resp = await analyze_market_snapshot(**kwargs)
-                    ai_results.append((snap, strat, decision, raw_resp, None))
+                    decision, _raw_resp = await analyze_market_snapshot(**kwargs)
+                    ai_exc: Optional[Exception] = None
                 except Exception as exc:
-                    ai_results.append((snap, strat, None, None, exc))
+                    decision, ai_exc = None, exc
+
+                t_save0 = time.perf_counter()
+                try:
+                    persist_ai_result(snap, strat, decision, ai_exc)
+                except Exception as exc:
+                    # A DB/validation failure on one result must not kill the worker or lose other results.
+                    log.exception("Failed persisting AI result %s (%s): %s", snap.get("symbol"), strat, exc)
+                    db.rollback()
+                    ai_errors.append(f"{snap.get('symbol')} ({strat}): gagal menyimpan hasil: {exc}")
                 finally:
+                    save_cpu_s += time.perf_counter() - t_save0
                     ai_done += 1
                     pct = 50 + int((ai_done / max(1, enqueued)) * 42) if enqueued else 50
                     self._set_progress(
@@ -416,10 +530,10 @@ class ScanPipeline:
                         stage="AI_ANALYSIS",
                         stage_label="Analisis setup oleh AI",
                         percent=min(92, pct),
-                        detail=f"{ai_done}/{enqueued} selesai ({snap['symbol']} • {strat})",
+                        detail=f"{ai_done}/{enqueued} selesai ({snap.get('symbol')} • {strat})",
                         done=ai_done,
                         total=enqueued,
-                        current_symbol=snap["symbol"],
+                        current_symbol=snap.get("symbol"),
                     )
 
             async def ai_worker() -> None:
@@ -528,128 +642,46 @@ class ScanPipeline:
 
             n_workers = max(1, int(rt_cfg["llm_max_concurrency"]))
             t_stream = time.perf_counter()
-            workers = [asyncio.create_task(ai_worker()) for _ in range(n_workers)]
-            producer_results = await asyncio.gather(
-                *(fetch_and_screen_pair(p) for p in top_pairs),
-                return_exceptions=True,
-            )
-            for res in producer_results:
-                if isinstance(res, Exception):
-                    log.warning("Pair producer error: %s", res)
-            t_producers_done = time.perf_counter()
-            timings["fetch_prefilter_s"] = round(t_producers_done - t_stream, 3)
+            eff_timeout = rt_cfg["llm_timeout_seconds"]
+            async with httpx.AsyncClient(timeout=httpx.Timeout(eff_timeout)) as llm_client:
+                workers = [asyncio.create_task(ai_worker()) for _ in range(n_workers)]
+                producer_results = await asyncio.gather(
+                    *(fetch_and_screen_pair(p) for p in top_pairs),
+                    return_exceptions=True,
+                )
+                for res in producer_results:
+                    if isinstance(res, Exception):
+                        log.warning("Pair producer error: %s", res)
+                t_producers_done = time.perf_counter()
+                timings["fetch_prefilter_s"] = round(t_producers_done - t_stream, 3)
 
-            for _ in workers:
-                queue.put_nowait(None)
-            await asyncio.gather(*workers)
+                for _ in workers:
+                    queue.put_nowait(None)
+                await asyncio.gather(*workers)
+                
+            # Final commit for remaining buffered items
+            db.commit()
+            
             # Time AI kept running after the last pair was fetched (the non-overlapped tail)
             timings["ai_tail_s"] = round(time.perf_counter() - t_producers_done, 3)
             timings["stream_total_s"] = round(time.perf_counter() - t_stream, 3)
             timings["prefilter_cpu_s"] = round(prefilter_cpu_s, 3)
+            timings["save_s"] = round(save_cpu_s, 3)
+            timings["save_cpu_s"] = round(save_cpu_s, 3)
             timings["ai_workers"] = n_workers
 
         if enqueued == 0 and not passed_symbols:
             log.info("Scan #%s: no pair passed prefilter", scan_run.id)
 
-        # ---- Stage 4: validation & persistence ----
+        # ---- Stage 4: results were validated & persisted incrementally by the AI workers ----
         self._set_progress(
             scan_run.id,
             stage="SAVING",
-            stage_label="Validasi Risk Guard & menyimpan hasil",
+            stage_label="Finalisasi hasil scan",
             percent=95,
-            detail=f"Memvalidasi {len(ai_results)} hasil evaluasi AI...",
+            detail=f"{ai_analyzed_count} hasil AI tersimpan, {setups_created} setup dibuat",
         )
-        t_save = time.perf_counter()
 
-        ai_analyzed_count = 0
-        setups_created = 0
-        ai_errors: list[str] = []
-        now = utcnow()
-
-        for snap, strat, decision, raw_resp, err in ai_results:
-            if err is not None or decision is None:
-                err_str = (str(err).strip() or type(err).__name__) if err is not None else "Empty AI decision"
-                ai_errors.append(f"{snap['symbol']} ({strat}): {err_str}")
-                db.add(
-                    ScanEvaluation(
-                        scan_run_id=scan_run.id,
-                        symbol=snap["symbol"],
-                        strategy_used=strat,
-                        raw_decision="ERROR",
-                        rejection_reason=err_str[:255],
-                        confidence=None,
-                    )
-                )
-                continue
-
-            ai_analyzed_count += 1
-            is_valid, normalized, reason = validate_and_guard_setup(
-                decision,
-                db=db,
-                min_confidence=rt_cfg["min_confidence"],
-                snapshot=snap,
-                risk_profile=rt_cfg["risk_profile"],
-            )
-
-            if not is_valid:
-                db.add(
-                    ScanEvaluation(
-                        scan_run_id=scan_run.id,
-                        symbol=snap["symbol"],
-                        strategy_used=strat,
-                        raw_decision=decision.decision,
-                        rejection_reason=reason[:255],
-                        confidence=decision.confidence,
-                    )
-                )
-                continue
-
-            strat_expiry_hours = profiles.get(strat, {}).get("expiry_hours", settings.setup_expiry_hours)
-            setup = TradeSetup(
-                scan_run_id=scan_run.id,
-                symbol=normalized.symbol,
-                strategy_used=normalized.strategy_used,
-                decision=normalized.decision,
-                market_regime=normalized.market_regime,
-                entry_type=normalized.entry_type,
-                entry_price=Decimal(f"{normalized.entry_price:.8f}"),
-                stop_loss=Decimal(f"{normalized.stop_loss:.8f}"),
-                take_profit=Decimal(f"{normalized.take_profit:.8f}"),
-                risk_reward_ratio=Decimal(f"{normalized.risk_reward_ratio:.4f}"),
-                confidence=normalized.confidence,
-                llm_provider=llm_cfg["provider"],
-                llm_model=llm_cfg["model_id"],
-                invalidation_reason=normalized.invalidation_reason,
-                rationale=normalized.rationale,
-                status="OPEN",
-                status_history=[
-                    {
-                        "at": now.isoformat(),
-                        "event": "CREATED",
-                        "status": "OPEN",
-                        "price": float(normalized.entry_price),
-                        "stop_loss": float(normalized.stop_loss),
-                        "take_profit": float(normalized.take_profit),
-                        "note": (
-                            f"Setup dibuat oleh sistem (AI {normalized.entry_type}) — "
-                            f"Entry: {float(normalized.entry_price):g}, "
-                            f"SL: {float(normalized.stop_loss):g}, "
-                            f"TP: {float(normalized.take_profit):g}"
-                        ),
-                    }
-                ],
-                expires_at=now + timedelta(hours=int(strat_expiry_hours)),
-                features_snapshot=snap,
-                ai_payload={
-                    **normalized.model_dump(),
-                    "prompt_version": prompt_versions.get(strat.strip().upper()),
-                },
-            )
-            db.add(setup)
-            db.flush()
-            setups_created += 1
-
-        timings["save_s"] = round(time.perf_counter() - t_save, 3)
         timings["total_s"] = round(time.perf_counter() - cycle_start, 3)
         log.info("Scan #%s stage timings: %s", scan_run.id, timings)
 

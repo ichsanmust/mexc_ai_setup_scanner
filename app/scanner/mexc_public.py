@@ -70,35 +70,44 @@ class MexcPublicClient:
         try:
             last_exc: Exception | None = None
             for attempt in range(retries):
-                async with self.semaphore:
-                    try:
+                is_last = attempt >= retries - 1
+                # Semaphore hanya membatasi request in-flight; backoff sleep dilakukan di luar
+                # agar slot concurrency tidak tertahan selama menunggu.
+                try:
+                    async with self.semaphore:
                         resp = await client.get(path, params=params)
-                        if resp.status_code == 429 or resp.status_code >= 500:
-                            wait_s = (2**attempt) * 0.6
-                            log.warning(
-                                "MEXC HTTP %s on %s (attempt %s/%s); retrying in %.1fs",
-                                resp.status_code,
-                                path,
-                                attempt + 1,
-                                retries,
-                                wait_s,
-                            )
-                            await asyncio.sleep(wait_s)
-                            continue
-                        resp.raise_for_status()
-                        payload = resp.json()
-                        if isinstance(payload, dict) and payload.get("success") is False:
-                            raise RuntimeError(f"MEXC API error on {path}: {payload}")
-                        return payload.get("data", payload) if isinstance(payload, dict) else payload
-                    except (httpx.RequestError, httpx.HTTPStatusError, RuntimeError) as exc:
-                        last_exc = exc
-                        if attempt < retries - 1:
-                            wait_s = (2**attempt) * 0.6
-                            await asyncio.sleep(wait_s)
-                        else:
-                            raise
-            if last_exc:
-                raise last_exc
+                except httpx.RequestError as exc:
+                    last_exc = exc
+                    if is_last:
+                        raise
+                    log.warning("MEXC request error on %s (attempt %s/%s): %s", path, attempt + 1, retries, exc)
+                    await asyncio.sleep((2**attempt) * 0.6)
+                    continue
+
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    last_exc = RuntimeError(f"MEXC HTTP {resp.status_code} on {path}")
+                    if is_last:
+                        raise last_exc
+                    wait_s = (2**attempt) * 0.6
+                    log.warning(
+                        "MEXC HTTP %s on %s (attempt %s/%s); retrying in %.1fs",
+                        resp.status_code,
+                        path,
+                        attempt + 1,
+                        retries,
+                        wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
+
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict) and payload.get("success") is False:
+                    raise RuntimeError(f"MEXC API error on {path}: {payload}")
+                return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+            # Tidak pernah tercapai: loop di atas selalu return atau raise.
+            raise last_exc or RuntimeError(f"MEXC request failed on {path}")
         finally:
             if own_client:
                 await client.aclose()

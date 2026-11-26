@@ -442,7 +442,8 @@ function renderScanRunsList(runs) {
 
   list.innerHTML = runs
     .map((r) => {
-      const cls = r.status === "FAILED" ? "failed" : "";
+      const hasSetup = (r.setups_created_count ?? 0) > 0;
+      const cls = `${r.status.toLowerCase()} ${hasSetup ? "has-setup" : ""}`;
       const stBadge =
         r.status === "COMPLETED"
           ? "badge-hit-tp"
@@ -474,7 +475,7 @@ function renderScanRunsList(runs) {
             <div class="run-metric"><span>Pair</span><b>${r.top_pairs_count ?? "-"}</b></div>
             <div class="run-metric"><span>Pre-filter</span><b>${r.prefiltered_count ?? "-"}</b></div>
             <div class="run-metric"><span>AI</span><b>${r.ai_analyzed_count ?? "-"}</b></div>
-            <div class="run-metric"><span>Setup</span><b>${r.setups_created_count ?? "-"}</b></div>
+            <div class="run-metric ${hasSetup ? 'metric-highlight' : ''}"><span>Setup</span><b>${r.setups_created_count ?? "-"}</b></div>
           </div>
           ${cfgLine}
           ${btcLine}
@@ -1347,10 +1348,22 @@ function getLatestTransition(setup) {
   return null;
 }
 
+const NEW_SETUP_WINDOW_MS = 180000;
+
+// Setup yang baru dibuat oleh run scan (created_at masih dalam jendela waktu "baru").
+function isRecentlyCreatedSetup(setup) {
+  const created = parseBackendUtcDate(setup.created_at);
+  if (!created) return false;
+  const age = Date.now() - created.getTime();
+  return age >= 0 && age < NEW_SETUP_WINDOW_MS;
+}
+
 function isRecentlyChangedSetup(setup) {
   const nowMs = Date.now();
   const live = state.justChangedSetups[setup.id];
   if (live && nowMs - live.atMs < 180000) return true;
+  // Setup baru dari scan: tetap ditandai setelah refresh halaman selama masih baru.
+  if (isRecentlyCreatedSetup(setup)) return true;
   const tr = getLatestTransition(setup);
   if (!tr || !tr.at) return false;
   const evDate = parseBackendUtcDate(tr.at);
@@ -1455,12 +1468,17 @@ async function loadSetups() {
 
   // Detect live status transitions across refreshes or manual tracker runs
   const liveTransitions = [];
+  const liveNewSetups = [];
   const nextKnown = { ...state.knownSetupStatuses };
   for (const s of data.items || []) {
     const prevSt = state.knownSetupStatuses[s.id];
     if (state.hasLoadedSetupsOnce && prevSt && prevSt !== s.status) {
       state.justChangedSetups[s.id] = { fromStatus: prevSt, toStatus: s.status, atMs: Date.now() };
       liveTransitions.push(`${s.symbol} (${prevSt} \u2192 ${s.status})`);
+    } else if (state.hasLoadedSetupsOnce && !prevSt && !state.justChangedSetups[s.id] && isRecentlyCreatedSetup(s)) {
+      // Setup baru masuk dari run scan (termasuk saat scan masih RUNNING): tandai sebagai baru.
+      state.justChangedSetups[s.id] = { fromStatus: null, toStatus: s.status, atMs: Date.now(), isNew: true };
+      liveNewSetups.push(`${s.symbol} ${s.decision}`);
     }
     nextKnown[s.id] = s.status;
   }
@@ -1482,6 +1500,11 @@ async function loadSetups() {
     const preview = liveTransitions.slice(0, 2).join(", ");
     const extra = liveTransitions.length > 2 ? ` (+${liveTransitions.length - 2} lagi)` : "";
     showToast(`Perubahan status: ${preview}${extra}`);
+  }
+  if (liveNewSetups.length) {
+    const preview = liveNewSetups.slice(0, 2).join(", ");
+    const extra = liveNewSetups.length > 2 ? ` (+${liveNewSetups.length - 2} lagi)` : "";
+    showToast(`Setup baru masuk: ${preview}${extra}`);
   }
 
   updateStatusTabCounts(data.status_counts || {});

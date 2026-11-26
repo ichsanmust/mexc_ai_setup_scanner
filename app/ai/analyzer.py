@@ -132,6 +132,40 @@ def load_strategy_prompts_map(db: Session | None, strategies: list[str]) -> dict
     return prompts
 
 
+# Module-level caches: the decision schema is static, so build/serialize it once per process.
+_CACHED_STRICT_SCHEMA: dict[str, Any] | None = None
+_CACHED_RESPONSE_FORMAT: dict[str, Any] | None = None
+_CACHED_SCHEMA_JSON: str | None = None
+
+
+def _get_strict_schema() -> dict[str, Any]:
+    global _CACHED_STRICT_SCHEMA
+    if _CACHED_STRICT_SCHEMA is None:
+        _CACHED_STRICT_SCHEMA = _build_strict_decision_json_schema()
+    return _CACHED_STRICT_SCHEMA
+
+
+def _get_schema_json_str() -> str:
+    global _CACHED_SCHEMA_JSON
+    if _CACHED_SCHEMA_JSON is None:
+        _CACHED_SCHEMA_JSON = json.dumps(_get_strict_schema(), ensure_ascii=False)
+    return _CACHED_SCHEMA_JSON
+
+
+def _get_response_format() -> dict[str, Any]:
+    global _CACHED_RESPONSE_FORMAT
+    if _CACHED_RESPONSE_FORMAT is None:
+        _CACHED_RESPONSE_FORMAT = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "mexc_trade_setup_decision",
+                "strict": True,
+                "schema": _get_strict_schema(),
+            },
+        }
+    return _CACHED_RESPONSE_FORMAT
+
+
 def _build_strict_decision_json_schema() -> dict[str, Any]:
     """Build OpenAI-compatible strict JSON Schema with reasoning-first field order.
 
@@ -186,15 +220,8 @@ def _build_strict_decision_json_schema() -> dict[str, Any]:
 
 
 def _build_response_format_schema() -> dict[str, Any]:
-    """Build OpenAI-compatible json_schema response_format from strict decision schema."""
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "mexc_trade_setup_decision",
-            "strict": True,
-            "schema": _build_strict_decision_json_schema(),
-        },
-    }
+    """Return OpenAI-compatible json_schema response_format (cached; schema is static)."""
+    return _get_response_format()
 
 
 def _extract_json_content(raw_content: str) -> str:
@@ -251,7 +278,7 @@ async def analyze_market_snapshot(
         raise RuntimeError(f"Base URL untuk provider '{provider}' belum diisi.")
 
     resolved_prompt = system_prompt if system_prompt is not None else load_strategy_prompt(strategy, db=db)
-    schema_json_str = json.dumps(_build_strict_decision_json_schema(), ensure_ascii=False)
+    schema_json_str = _get_schema_json_str()
     htf_iv = (snapshot.get("htf_1h") or {}).get("interval", "HTF")
     ltf_iv = (snapshot.get("ltf_15m") or {}).get("interval", "LTF")
     eff_min_conf = max(0, min(100, int(min_confidence if min_confidence is not None else settings.min_confidence)))
