@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <title>MEXC AI Setup Scanner</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/styles.css?v=20261127a" />
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -1243,6 +1244,23 @@
     </div>
   </div>
 
+  <div id="confirm-stop-scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-stop-scan-title">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h2 id="confirm-stop-scan-title">Konfirmasi Stop Scan</h2>
+        <button type="button" id="btn-close-confirm-stop-scan" class="btn-icon" title="Tutup">&times;</button>
+      </div>
+      <div class="modal-body edit-status-form">
+        <p id="confirm-stop-scan-msg" style="margin:0; font-size:13.5px;">Apakah Anda yakin ingin menghentikan scan yang sedang berjalan?</p>
+        <p class="subtitle-sm" style="margin:0;">Setup dan evaluasi yang sudah selesai diproses sebelum dihentikan akan tetap tersimpan.</p>
+        <div class="edit-status-actions">
+          <button type="button" id="btn-cancel-confirm-stop-scan" class="btn btn-secondary">Batal</button>
+          <button type="button" id="btn-confirm-stop-scan-ok" class="btn btn-danger">Ya, Stop Scan</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="quick-copy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="quick-copy-title">
     <div class="modal-card modal-card-sm">
       <div class="modal-header">
@@ -1296,6 +1314,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261127d"></script>
+  <script src="/static/app.js?v=20261127e"></script>
 </body>
 </html>

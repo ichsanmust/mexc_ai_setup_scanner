@@ -532,6 +532,30 @@ function formatStrategyProfilesSummary(cfg, fallbackStrategy = "") {
   return (cfg && Array.isArray(cfg.active_strategies) && cfg.active_strategies.join(", ")) || fallbackStrategy || "-";
 }
 
+let _pendingStopScan = null;
+
+function closeConfirmStopScanModal() {
+  document.getElementById("confirm-stop-scan-modal")?.classList.add("hidden");
+  _pendingStopScan = null;
+}
+
+function openConfirmStopScanModal(runId = null, triggerBtn = null) {
+  const modal = document.getElementById("confirm-stop-scan-modal");
+  if (!modal) {
+    stopScanRun(runId, triggerBtn);
+    return;
+  }
+  _pendingStopScan = { runId, triggerBtn };
+  const msgEl = document.getElementById("confirm-stop-scan-msg");
+  if (msgEl) {
+    msgEl.textContent =
+      runId !== null && runId !== undefined
+        ? `Apakah Anda yakin ingin menghentikan Scan #${runId} dan mengubah statusnya menjadi CANCELLED?`
+        : "Apakah Anda yakin ingin menghentikan proses scan yang sedang berjalan?";
+  }
+  modal.classList.remove("hidden");
+}
+
 async function stopScanRun(runId = null, triggerBtn = null) {
   const topStopBtn = document.getElementById("btn-stop-scan");
   const btn = triggerBtn || topStopBtn;
@@ -621,7 +645,7 @@ function renderScanRunsList(runs) {
     btn.addEventListener("click", () => openScanEvaluationsModal(Number(btn.dataset.evalRun)));
   });
   list.querySelectorAll("button[data-stop-run]").forEach((btn) => {
-    btn.addEventListener("click", () => stopScanRun(Number(btn.dataset.stopRun), btn));
+    btn.addEventListener("click", () => openConfirmStopScanModal(Number(btn.dataset.stopRun), btn));
   });
 }
 
@@ -4695,7 +4719,21 @@ function wireEvents() {
   }
 
   document.getElementById("btn-run-scan").addEventListener("click", openConfirmRunScanModal);
-  document.getElementById("btn-stop-scan")?.addEventListener("click", () => stopScanRun(null));
+  document.getElementById("btn-stop-scan")?.addEventListener("click", () => openConfirmStopScanModal(null));
+  document.getElementById("btn-close-confirm-stop-scan")?.addEventListener("click", closeConfirmStopScanModal);
+  document.getElementById("btn-cancel-confirm-stop-scan")?.addEventListener("click", closeConfirmStopScanModal);
+  document.getElementById("confirm-stop-scan-modal")?.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "confirm-stop-scan-modal") closeConfirmStopScanModal();
+  });
+  document.getElementById("btn-confirm-stop-scan-ok")?.addEventListener("click", () => {
+    const pending = _pendingStopScan;
+    closeConfirmStopScanModal();
+    if (pending) {
+      stopScanRun(pending.runId, pending.triggerBtn);
+    } else {
+      stopScanRun(null);
+    }
+  });
   document.getElementById("btn-close-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
   document.getElementById("btn-cancel-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
   document.getElementById("confirm-scan-modal")?.addEventListener("click", (e) => {

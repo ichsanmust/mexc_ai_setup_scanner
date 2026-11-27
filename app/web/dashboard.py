@@ -1977,6 +1977,15 @@ def serve_dashboard():
     return {"status": "online", "app": "mexc-ai-setup-scanner", "docs_url": "/docs"}
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def serve_favicon():
+    """Serve the M badge SVG favicon to prevent 404 on /favicon.ico."""
+    icon_file = FRONTEND_DIR / "favicon.svg"
+    if icon_file.exists():
+        return FileResponse(str(icon_file), media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Favicon tidak ditemukan.")
+
+
 @app.get("/flow", include_in_schema=False)
 def serve_flow_page():
     """Serve interactive scan architecture & prompt audit page."""
