@@ -94,6 +94,18 @@ body {
   flex-wrap: nowrap;
   flex-shrink: 0;
 }
+.btn-sound-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  min-width: 36px;
+  color: var(--text);
+}
+.btn-sound-toggle.is-muted {
+  color: var(--muted);
+  opacity: 0.72;
+}
 .topbar-nav {
   display: inline-flex;
   align-items: center;
