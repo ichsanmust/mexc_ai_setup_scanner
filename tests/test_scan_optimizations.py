@@ -103,6 +103,45 @@ async def test_get_json_backoff_does_not_hold_semaphore(monkeypatch):
     assert held_during_sleep == [False]
 
 
+@pytest.mark.asyncio
+async def test_get_json_retries_on_mexc_code_510_rate_limit(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("app.scanner.mexc_public.asyncio.sleep", fake_sleep)
+    rate_limit_payload = {
+        "success": False,
+        "code": 510,
+        "message": "Endpoint rate limit exceeded. Resource: /api/v1/contract/kline/*; scope: IP",
+        "_extend": {"rateLimitType": "ENDPOINT_RATE_LIMIT", "resource": "/api/v1/contract/kline/*", "scope": "IP"},
+    }
+    client = MexcPublicClient(base_url="http://x", max_concurrency=2)
+    client._client = _ScriptedClient(
+        [_FakeResp(200, rate_limit_payload), _FakeResp(200, {"success": True, "data": [42]})]
+    )
+
+    assert await client._get_json("/api/v1/contract/kline/GALA_USDT", retries=3) == [42]
+    assert len(sleeps) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_json_does_not_retry_non_rate_limit_api_error(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("app.scanner.mexc_public.asyncio.sleep", fake_sleep)
+    client = MexcPublicClient(base_url="http://x", max_concurrency=2)
+    client._client = _ScriptedClient([_FakeResp(200, {"success": False, "code": 1001, "message": "Invalid symbol"})])
+
+    with pytest.raises(RuntimeError, match="MEXC API error"):
+        await client._get_json("/api/v1/contract/kline/BAD_USDT", retries=3)
+    assert sleeps == []
+
+
 # ---------- Pipeline: incremental persistence & partial AI failures ----------
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 from typing import Any, Optional
 
@@ -39,6 +40,9 @@ class MexcPublicClient:
         self.semaphore = asyncio.Semaphore(max_concurrency or settings.mexc_max_concurrency)
         self.timeout = timeout_seconds or settings.mexc_request_timeout_seconds
         self._client: Optional[httpx.AsyncClient] = None
+        self._kline_pace_lock = asyncio.Lock()
+        self._next_kline_at = 0.0
+        self._kline_min_interval = 0.08
 
     def _build_client(self) -> httpx.AsyncClient:
         kwargs: dict[str, Any] = {
@@ -103,7 +107,28 @@ class MexcPublicClient:
                 resp.raise_for_status()
                 payload = resp.json()
                 if isinstance(payload, dict) and payload.get("success") is False:
-                    raise RuntimeError(f"MEXC API error on {path}: {payload}")
+                    err_code = payload.get("code")
+                    err_msg = str(payload.get("message") or "").lower()
+                    extend = payload.get("_extend") if isinstance(payload.get("_extend"), dict) else {}
+                    is_rate_limit = (
+                        err_code == 510
+                        or bool(extend.get("rateLimitType"))
+                        or "rate limit" in err_msg
+                    )
+                    last_exc = RuntimeError(f"MEXC API error on {path}: {payload}")
+                    if not is_rate_limit or is_last:
+                        raise last_exc
+                    wait_s = min(8.0, (2**attempt) * 1.2 + random.uniform(0.15, 0.45))
+                    log.warning(
+                        "MEXC rate limit (code=%s) on %s (attempt %s/%s); retrying in %.2fs",
+                        err_code,
+                        path,
+                        attempt + 1,
+                        retries,
+                        wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
                 return payload.get("data", payload) if isinstance(payload, dict) else payload
 
             # Tidak pernah tercapai: loop di atas selalu return atau raise.
@@ -200,6 +225,18 @@ class MexcPublicClient:
             selected.append({"symbol": sym, "contract": contract, "ticker": ticker, "amount24": amount_24})
         return len(contracts), selected, invalid
 
+    async def _pace_kline_request(self) -> None:
+        """Space out kline requests slightly to avoid triggering MEXC IP burst rate limits (code 510)."""
+        if self._kline_min_interval <= 0:
+            return
+        async with self._kline_pace_lock:
+            now = time.monotonic()
+            scheduled = max(now, self._next_kline_at)
+            self._next_kline_at = scheduled + self._kline_min_interval
+            delay = scheduled - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def get_kline(
         self,
         symbol: str,
@@ -213,9 +250,11 @@ class MexcPublicClient:
         step_sec = INTERVAL_SECONDS_MAP.get(interval, 900)
         calc_start = start_ts or (now_sec - step_sec * (limit + 5))
 
+        await self._pace_kline_request()
         data = await self._get_json(
             f"/api/v1/contract/kline/{symbol}",
             params={"interval": interval, "start": calc_start, "end": now_sec},
+            retries=5,
         )
         return parse_mexc_kline_payload(data, limit=limit)
 
