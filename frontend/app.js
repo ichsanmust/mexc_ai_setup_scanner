@@ -212,6 +212,97 @@ function showToast(msg, isError = false) {
   setTimeout(() => el.classList.add("hidden"), 4500);
 }
 
+const SOUND_ENABLED_KEY = "mexc_sound_notifications_enabled";
+let _audioCtx = null;
+
+function isSoundEnabled() {
+  return localStorage.getItem(SOUND_ENABLED_KEY) !== "0";
+}
+
+function getAudioContext() {
+  if (typeof window === "undefined") return null;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!_audioCtx) {
+    _audioCtx = new Ctx();
+  }
+  return _audioCtx;
+}
+
+function unlockAudioContext() {
+  const ctx = getAudioContext();
+  if (ctx && ctx.state === "suspended") {
+    ctx.resume().catch(() => {});
+  }
+}
+
+function renderSoundToggleButton() {
+  const btn = document.getElementById("btn-toggle-sound");
+  if (!btn) return;
+  const enabled = isSoundEnabled();
+  btn.classList.toggle("is-muted", !enabled);
+  btn.setAttribute("aria-pressed", String(enabled));
+  btn.title = enabled
+    ? "Suara notifikasi perubahan status: AKTIF (klik untuk mute)"
+    : "Suara notifikasi perubahan status: MATI (klik untuk aktifkan)";
+  btn.innerHTML = enabled
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>';
+}
+
+function playNotificationSound(kind = "status") {
+  if (!isSoundEnabled()) return;
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") {
+    ctx.resume().catch(() => {});
+  }
+
+  // Tone presets (frequency in Hz, duration in sec, delay offset in sec)
+  const presets = {
+    win: [
+      { freq: 523.25, dur: 0.12, offset: 0.0, type: "sine", gain: 0.13 },
+      { freq: 659.25, dur: 0.12, offset: 0.11, type: "sine", gain: 0.13 },
+      { freq: 783.99, dur: 0.22, offset: 0.22, type: "sine", gain: 0.15 },
+    ],
+    loss: [
+      { freq: 392.0, dur: 0.14, offset: 0.0, type: "triangle", gain: 0.13 },
+      { freq: 311.13, dur: 0.24, offset: 0.14, type: "triangle", gain: 0.13 },
+    ],
+    new_setup: [
+      { freq: 587.33, dur: 0.11, offset: 0.0, type: "sine", gain: 0.11 },
+      { freq: 880.0, dur: 0.18, offset: 0.11, type: "sine", gain: 0.12 },
+    ],
+    status: [
+      { freq: 659.25, dur: 0.11, offset: 0.0, type: "sine", gain: 0.12 },
+      { freq: 880.0, dur: 0.18, offset: 0.11, type: "sine", gain: 0.13 },
+    ],
+  };
+
+  const notes = presets[kind] || presets.status;
+  const baseTime = ctx.currentTime + 0.01;
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+    osc.type = n.type;
+    osc.frequency.setValueAtTime(n.freq, baseTime + n.offset);
+    gainNode.gain.setValueAtTime(0.0001, baseTime + n.offset);
+    gainNode.gain.exponentialRampToValueAtTime(n.gain, baseTime + n.offset + 0.015);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, baseTime + n.offset + n.dur);
+    osc.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    osc.start(baseTime + n.offset);
+    osc.stop(baseTime + n.offset + n.dur + 0.02);
+  }
+}
+
+function resolveTransitionSoundKind(transitions) {
+  const joined = transitions.join(" ");
+  if (/\b(HIT_TP|CLOSED_MANUAL_TP|BEP)\b/.test(joined)) return "win";
+  if (/\b(HIT_SL|CLOSED_MANUAL_CL)\b/.test(joined)) return "loss";
+  return "status";
+}
+
 function inferDecimalPrecision(val) {
   const n = Math.abs(Number(val));
   if (!Number.isFinite(n) || n === 0) return 4;
@@ -1439,7 +1530,7 @@ function renderRecentChangesStrip(changes = []) {
   });
 }
 
-async function loadSetups() {
+async function loadSetups({ silentSound = false } = {}) {
   const params = new URLSearchParams();
   if (state.statusFilter !== "ALL") params.set("status", state.statusFilter);
   const stratFilters = Array.isArray(state.setupStrategyFilter) ? state.setupStrategyFilter : [];
@@ -1500,11 +1591,17 @@ async function loadSetups() {
     const preview = liveTransitions.slice(0, 2).join(", ");
     const extra = liveTransitions.length > 2 ? ` (+${liveTransitions.length - 2} lagi)` : "";
     showToast(`Perubahan status: ${preview}${extra}`);
+    if (!silentSound) {
+      playNotificationSound(resolveTransitionSoundKind(liveTransitions));
+    }
   }
   if (liveNewSetups.length) {
     const preview = liveNewSetups.slice(0, 2).join(", ");
     const extra = liveNewSetups.length > 2 ? ` (+${liveNewSetups.length - 2} lagi)` : "";
     showToast(`Setup baru masuk: ${preview}${extra}`);
+    if (!silentSound && !liveTransitions.length) {
+      playNotificationSound("new_setup");
+    }
   }
 
   updateStatusTabCounts(data.status_counts || {});
@@ -4447,11 +4544,15 @@ function wireEvents() {
           if ((!st.is_running && (hasFinishedNewRun || checks >= 5)) || checks >= 300) {
             clearInterval(timer);
             syncScanButtonsState(false);
-            await Promise.all([loadSetups(), loadAnalytics()]);
+            await Promise.all([loadSetups({ silentSound: true }), loadAnalytics()]);
             if (latest && latest.status === "FAILED") {
               showToast(`Scan #${latest.id} gagal: ${latest.error_message || "Cek banner error"}`, true);
+              playNotificationSound("loss");
             } else if (latest && latest.status === "COMPLETED") {
               showToast(`Scan #${latest.id} selesai: ${latest.setups_created_count} setup baru.`);
+              playNotificationSound(latest.setups_created_count > 0 ? "win" : "status");
+            } else {
+              playNotificationSound("status");
             }
           }
         } catch (pollErr) {
@@ -4575,6 +4676,22 @@ function wireEvents() {
       }
     }
   });
+
+  const btnToggleSound = document.getElementById("btn-toggle-sound");
+  if (btnToggleSound) {
+    btnToggleSound.addEventListener("click", () => {
+      unlockAudioContext();
+      const nextEnabled = !isSoundEnabled();
+      localStorage.setItem(SOUND_ENABLED_KEY, nextEnabled ? "1" : "0");
+      renderSoundToggleButton();
+      if (nextEnabled) {
+        playNotificationSound("status");
+        showToast("Suara notifikasi diaktifkan.");
+      } else {
+        showToast("Suara notifikasi dimatikan.");
+      }
+    });
+  }
 
   document.getElementById("btn-run-tracker").addEventListener("click", async () => {
     try {
@@ -5035,6 +5152,9 @@ function setBtcMoverCollapsed(collapsed, persist = true) {
 }
 
 async function bootstrap() {
+  renderSoundToggleButton();
+  document.addEventListener("pointerdown", unlockAudioContext, { once: true, passive: true });
+  document.addEventListener("keydown", unlockAudioContext, { once: true, passive: true });
   const savedBtcCollapsed = localStorage.getItem(BTC_MOVER_COLLAPSED_KEY) === "1";
   setBtcMoverCollapsed(savedBtcCollapsed, false);
   const savedLiveMs = localStorage.getItem("mexc_live_chart_ms");
