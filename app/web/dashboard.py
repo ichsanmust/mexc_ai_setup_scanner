@@ -436,6 +436,7 @@ def get_scanner_status(db: Session = Depends(get_db)):
     rt_cfg = resolve_runtime_settings(db)
     return {
         "is_running": scan_pipeline.is_running,
+        "current_run_id": scan_pipeline.current_run_id,
         "progress": scan_pipeline.current_progress,
         "auto_start_scheduler": settings.auto_start_scheduler,
         "auto_scan_enabled": rt_cfg["auto_scan_enabled"],
@@ -669,6 +670,53 @@ async def trigger_scan_now(
         "started": True,
         "prev_run_id": prev_run_id,
         "message": "Scan market MEXC Futures dimulai di background.",
+    }
+
+
+@app.post("/api/scanner/stop")
+async def stop_scan_now(
+    run_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Stop an active scan task or mark orphaned RUNNING scan_runs rows as CANCELLED."""
+    if scan_pipeline.is_running and (run_id is None or scan_pipeline.current_run_id == run_id):
+        target_id = scan_pipeline.current_run_id
+        stopped = scan_pipeline.request_stop(run_id=run_id)
+        if stopped:
+            await asyncio.sleep(0.05)
+            return {
+                "stopped": True,
+                "mode": "live",
+                "run_id": target_id,
+                "message": f"Permintaan stop scan #{target_id} dikirim." if target_id else "Permintaan stop scan dikirim.",
+            }
+
+    query = db.query(ScanRun).filter(ScanRun.status == "RUNNING")
+    if run_id is not None:
+        query = query.filter(ScanRun.id == run_id)
+    stale_runs = query.order_by(desc(ScanRun.id)).all()
+    if not stale_runs:
+        return {
+            "stopped": False,
+            "mode": "none",
+            "updated_ids": [],
+            "message": "Tidak ada scan berstatus RUNNING yang aktif.",
+        }
+
+    now = utcnow()
+    updated_ids: list[int] = []
+    for row in stale_runs:
+        row.status = "CANCELLED"
+        row.finished_at = now
+        if not row.error_message:
+            row.error_message = "Dihentikan manual (scan sebelumnya terhenti saat server berhenti)."
+        updated_ids.append(row.id)
+    db.commit()
+    return {
+        "stopped": True,
+        "mode": "db_cleanup",
+        "updated_ids": updated_ids,
+        "message": f"Status {len(updated_ids)} scan RUNNING diubah menjadi CANCELLED.",
     }
 
 

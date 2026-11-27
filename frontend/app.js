@@ -381,6 +381,14 @@ function syncScanButtonsState(isRunning) {
       ? "Scan sedang berjalan (hanya 1 proses scan aktif dalam satu waktu)"
       : "";
   }
+  const stopBtn = document.getElementById("btn-stop-scan");
+  if (stopBtn) {
+    stopBtn.classList.toggle("hidden", !running);
+    if (!running) {
+      stopBtn.disabled = false;
+      stopBtn.textContent = "Stop Scan";
+    }
+  }
   const modalInfo = document.getElementById("modal-scan-running-info");
   if (modalInfo) {
     modalInfo.classList.toggle("hidden", !running);
@@ -524,6 +532,32 @@ function formatStrategyProfilesSummary(cfg, fallbackStrategy = "") {
   return (cfg && Array.isArray(cfg.active_strategies) && cfg.active_strategies.join(", ")) || fallbackStrategy || "-";
 }
 
+async function stopScanRun(runId = null, triggerBtn = null) {
+  const topStopBtn = document.getElementById("btn-stop-scan");
+  const btn = triggerBtn || topStopBtn;
+  const prevText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Stopping...";
+  }
+  try {
+    const qs = runId !== null && runId !== undefined ? `?run_id=${encodeURIComponent(runId)}` : "";
+    const res = await apiRequest(`/api/scanner/stop${qs}`, { method: "POST" });
+    showToast(res.message || "Permintaan stop scan diproses.");
+    if (res.stopped) {
+      playNotificationSound("status");
+    }
+    await Promise.all([loadHealthAndStatus(), loadSetups(), loadAnalytics()]);
+  } catch (err) {
+    showErrorBanner("Gagal Menghentikan Scan", err.message);
+    showToast(err.message, true);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevText || "Stop";
+    }
+  }
+}
+
 function renderScanRunsList(runs) {
   const list = document.getElementById("scan-runs-list");
   if (!runs.length) {
@@ -540,7 +574,9 @@ function renderScanRunsList(runs) {
           ? "badge-hit-tp"
           : r.status === "FAILED"
             ? "badge-hit-sl"
-            : "badge-open";
+            : r.status === "CANCELLED"
+              ? "badge-expired"
+              : "badge-open";
       const timeStr = r.started_at ? formatJakartaDateTime(r.started_at) : "-";
       const hasErr = Boolean(r.error_message);
       const errBadge = hasErr
@@ -572,7 +608,10 @@ function renderScanRunsList(runs) {
           ${btcLine}
           <div class="scan-run-footer">
             ${errBadge}
-            <button type="button" class="btn btn-secondary btn-sm" data-eval-run="${r.id}">Detail Evaluasi</button>
+            <div style="display:flex; gap:6px; align-items:center;">
+              ${r.status === "RUNNING" ? `<button type="button" class="btn btn-danger btn-sm" data-stop-run="${r.id}" title="Hentikan scan ini &amp; ubah status menjadi CANCELLED">Stop</button>` : ""}
+              <button type="button" class="btn btn-secondary btn-sm" data-eval-run="${r.id}">Detail Evaluasi</button>
+            </div>
           </div>
         </div>`;
     })
@@ -580,6 +619,9 @@ function renderScanRunsList(runs) {
 
   list.querySelectorAll("button[data-eval-run]").forEach((btn) => {
     btn.addEventListener("click", () => openScanEvaluationsModal(Number(btn.dataset.evalRun)));
+  });
+  list.querySelectorAll("button[data-stop-run]").forEach((btn) => {
+    btn.addEventListener("click", () => stopScanRun(Number(btn.dataset.stopRun), btn));
   });
 }
 
@@ -733,7 +775,7 @@ async function fetchAndRenderScanEvaluations(runId, { preserveFilter = false } =
   const startedTxt = r.started_at ? formatJakartaDateTime(r.started_at, true) : "-";
   const finishedTxt = r.finished_at ? formatJakartaDateTime(r.finished_at, true) : "-";
   document.getElementById("eval-modal-summary").innerHTML = `
-    <div class="eval-summary-row"><strong>Status:</strong> <span class="badge ${r.status === "FAILED" ? "badge-hit-sl" : r.status === "COMPLETED" ? "badge-hit-tp" : "badge-open"}">${r.status}</span> &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
+    <div class="eval-summary-row"><strong>Status:</strong> <span class="badge ${r.status === "FAILED" ? "badge-hit-sl" : r.status === "COMPLETED" ? "badge-hit-tp" : r.status === "CANCELLED" ? "badge-expired" : "badge-open"}">${r.status}</span> &bull; <strong>Model:</strong> ${escapeHtml(r.llm_provider || "-")} / ${escapeHtml(r.llm_model || "-")}</div>
     <div class="eval-summary-row"><strong>Waktu:</strong> Mulai ${escapeHtml(startedTxt)} &bull; Selesai ${escapeHtml(finishedTxt)}</div>
     <div class="eval-summary-metrics">
       <div class="eval-metric"><span>Top Pair</span><b>${r.top_pairs_count ?? "-"}</b></div>
@@ -4548,6 +4590,9 @@ function wireEvents() {
             if (latest && latest.status === "FAILED") {
               showToast(`Scan #${latest.id} gagal: ${latest.error_message || "Cek banner error"}`, true);
               playNotificationSound("loss");
+            } else if (latest && latest.status === "CANCELLED") {
+              showToast(`Scan #${latest.id} dihentikan.`);
+              playNotificationSound("status");
             } else if (latest && latest.status === "COMPLETED") {
               showToast(`Scan #${latest.id} selesai: ${latest.setups_created_count} setup baru.`);
               playNotificationSound(latest.setups_created_count > 0 ? "win" : "status");
@@ -4650,6 +4695,7 @@ function wireEvents() {
   }
 
   document.getElementById("btn-run-scan").addEventListener("click", openConfirmRunScanModal);
+  document.getElementById("btn-stop-scan")?.addEventListener("click", () => stopScanRun(null));
   document.getElementById("btn-close-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
   document.getElementById("btn-cancel-confirm-scan")?.addEventListener("click", closeConfirmRunScanModal);
   document.getElementById("confirm-scan-modal")?.addEventListener("click", (e) => {

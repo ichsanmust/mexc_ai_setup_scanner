@@ -1,11 +1,13 @@
 """Tests for scan-performance/reliability changes: MEXC retry semantics, incremental persistence, shared LLM client."""
 
+import asyncio
+
 import httpx
 import pytest
 
 from app.core import pipeline as pipeline_mod
 from app.core.pipeline import ScanPipeline
-from app.models import AppSetting, ScanEvaluation, TradeSetup
+from app.models import AppSetting, ScanEvaluation, ScanRun, TradeSetup
 from app.schemas import AISetupDecision
 from app.scanner.mexc_public import MexcPublicClient
 
@@ -252,3 +254,58 @@ async def test_pipeline_passes_shared_llm_client_to_ai(db_session, monkeypatch):
     # All AI calls in one scan share the same httpx.AsyncClient instance
     assert all(c is seen_clients[0] for c in seen_clients)
     assert isinstance(seen_clients[0], httpx.AsyncClient)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_request_stop_cancels_active_scan(db_session, monkeypatch):
+    db, TestingSessionLocal, _ = db_session
+    key_row = db.query(AppSetting).filter(AppSetting.key == "commandcode_api_key").first()
+    key_row.value = "test-cmd-key"
+    db.commit()
+
+    monkeypatch.setattr(pipeline_mod, "SessionLocal", TestingSessionLocal)
+    pipeline = ScanPipeline()
+
+    async def slow_get_top_pairs(self, **kwargs):
+        await asyncio.sleep(5)
+        return 0, []
+
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_top_pairs", slow_get_top_pairs)
+
+    task = asyncio.create_task(pipeline.run_once(strategies=["TREND_PULLBACK"], top_n=1))
+    # Wait until pipeline marks itself as running
+    for _ in range(50):
+        if pipeline.is_running and pipeline.current_run_id is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    assert pipeline.is_running is True
+    assert pipeline.request_stop() is True
+
+    summary = await task
+    assert summary["status"] == "CANCELLED"
+    assert pipeline.is_running is False
+    run_row = db.get(ScanRun, summary["scan_run_id"])
+    db.refresh(run_row)
+    assert run_row.status == "CANCELLED"
+    assert run_row.finished_at is not None
+
+
+def test_stop_endpoint_cleans_up_orphaned_running_scan(api_client, db_session):
+    db, _, _ = db_session
+    stale_run = ScanRun(strategy="TREND_PULLBACK", status="RUNNING")
+    db.add(stale_run)
+    db.commit()
+    db.refresh(stale_run)
+
+    resp = api_client.post(f"/api/scanner/stop?run_id={stale_run.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stopped"] is True
+    assert body["mode"] == "db_cleanup"
+    assert stale_run.id in body["updated_ids"]
+
+    db.expire_all()
+    refreshed = db.get(ScanRun, stale_run.id)
+    assert refreshed.status == "CANCELLED"
+    assert refreshed.finished_at is not None

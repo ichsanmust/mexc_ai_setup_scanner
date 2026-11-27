@@ -39,6 +39,7 @@
       <button type="button" id="btn-toggle-sound" class="btn btn-secondary btn-sound-toggle" title="Suara notifikasi perubahan status: AKTIF (klik untuk mute)" aria-pressed="true" aria-label="Toggle suara notifikasi"></button>
       <button id="btn-run-tracker" class="btn btn-secondary">Check Outcomes</button>
       <button id="btn-run-scan" class="btn btn-primary">Run Scan Now</button>
+      <button type="button" id="btn-stop-scan" class="btn btn-danger hidden" title="Hentikan scan yang sedang berjalan">Stop Scan</button>
       <span class="topbar-divider" aria-hidden="true"></span>
       <a href="/flow" class="btn btn-secondary nav-external-link" title="Buka halaman terpisah: diagram Alur Scan &amp; Audit Prompt">Alur Scan &#8599;</a>
     </div>
@@ -579,6 +580,7 @@
               <option value="ALL">Semua Status</option>
               <option value="COMPLETED">COMPLETED</option>
               <option value="FAILED">FAILED</option>
+              <option value="CANCELLED">CANCELLED</option>
               <option value="RUNNING">RUNNING</option>
             </select>
             <button type="button" id="btn-reset-run-filters" class="btn btn-secondary btn-sm" title="Reset filter Riwayat Scan">Reset</button>
@@ -1294,6 +1296,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20261127b"></script>
+  <script src="/static/app.js?v=20261127d"></script>
 </body>
 </html>

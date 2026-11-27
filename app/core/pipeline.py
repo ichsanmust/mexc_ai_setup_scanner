@@ -93,8 +93,21 @@ class ScanPipeline:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self.is_running: bool = False
+        self.current_run_id: Optional[int] = None
+        self._active_task: Optional[asyncio.Task[Any]] = None
+        self._cancel_requested: bool = False
         self.last_run_summary: Optional[dict[str, Any]] = None
         self.current_progress: Optional[dict[str, Any]] = None
+
+    def request_stop(self, run_id: Optional[int] = None) -> bool:
+        """Request cancellation of the currently running scan task."""
+        if not self.is_running or self._active_task is None:
+            return False
+        if run_id is not None and self.current_run_id != run_id:
+            return False
+        self._cancel_requested = True
+        self._active_task.cancel()
+        return True
 
     def _set_progress(
         self,
@@ -129,6 +142,8 @@ class ScanPipeline:
 
         async with self._lock:
             self.is_running = True
+            self._cancel_requested = False
+            self._active_task = asyncio.current_task()
             db = SessionLocal()
             rt_cfg = resolve_runtime_settings(db)
             target_strategies = strategies or rt_cfg["active_strategies"]
@@ -171,6 +186,7 @@ class ScanPipeline:
             db.add(scan_run)
             db.commit()
             db.refresh(scan_run)
+            self.current_run_id = scan_run.id
             self._set_progress(
                 scan_run.id,
                 stage="FETCH_PAIRS",
@@ -194,6 +210,23 @@ class ScanPipeline:
                 db.commit()
                 self.last_run_summary = summary
                 return summary
+            except asyncio.CancelledError:
+                log.warning("Scan cycle #%s cancelled.", scan_run.id)
+                db.rollback()
+                scan_run = db.get(ScanRun, scan_run.id) or scan_run
+                scan_run.status = "CANCELLED"
+                scan_run.error_message = "Scan dihentikan oleh user."
+                scan_run.finished_at = utcnow()
+                db.commit()
+                summary = {
+                    "scan_run_id": scan_run.id,
+                    "status": "CANCELLED",
+                    "error": None,
+                }
+                self.last_run_summary = summary
+                if self._cancel_requested:
+                    return summary
+                raise
             except httpx.ConnectError as exc:
                 msg = (
                     f"Koneksi ke MEXC ({rt_cfg['mexc_base_url']}) gagal: {exc}. "
@@ -228,6 +261,9 @@ class ScanPipeline:
                 return summary
             finally:
                 self.is_running = False
+                self.current_run_id = None
+                self._active_task = None
+                self._cancel_requested = False
                 self.current_progress = None
                 db.close()
 
