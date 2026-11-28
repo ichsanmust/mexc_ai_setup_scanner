@@ -214,6 +214,8 @@ function showToast(msg, isError = false) {
 
 const SOUND_ENABLED_KEY = "mexc_sound_notifications_enabled";
 let _audioCtx = null;
+let trackerRunInFlight = false;
+let trackerBtnLabel = "Check Outcomes";
 
 function isSoundEnabled() {
   return localStorage.getItem(SOUND_ENABLED_KEY) !== "0";
@@ -419,7 +421,8 @@ async function loadHealthAndStatus() {
 
   const trackerBtn = document.getElementById("btn-run-tracker");
   const trackerSec = scannerStatus.tracker_interval_seconds || 60;
-  trackerBtn.textContent = `Check Outcomes (Auto: ${trackerSec}s)`;
+  trackerBtnLabel = `Check Outcomes (Auto: ${trackerSec}s)`;
+  if (!trackerRunInFlight) trackerBtn.textContent = trackerBtnLabel;
   trackerBtn.title = `Tracker berjalan otomatis setiap ${trackerSec} detik untuk mengecek TP/SL/Expired setup OPEN. Klik untuk cek sekarang.`;
 
   badge.className = "badge";
@@ -4804,6 +4807,13 @@ function wireEvents() {
   }
 
   document.getElementById("btn-run-tracker").addEventListener("click", async () => {
+    if (trackerRunInFlight) return;
+    trackerRunInFlight = true;
+    const trackerBtnEl = document.getElementById("btn-run-tracker");
+    trackerBtnEl.disabled = true;
+    trackerBtnEl.setAttribute("aria-busy", "true");
+    trackerBtnEl.classList.add("is-loading");
+    trackerBtnEl.textContent = "Checking...";
     try {
       const res = await apiRequest("/api/tracker/run", { method: "POST" });
       hideErrorBanner();
@@ -4814,6 +4824,12 @@ function wireEvents() {
     } catch (err) {
       showErrorBanner("Outcome Tracker Error", err.message);
       showToast(err.message, true);
+    } finally {
+      trackerRunInFlight = false;
+      trackerBtnEl.disabled = false;
+      trackerBtnEl.removeAttribute("aria-busy");
+      trackerBtnEl.classList.remove("is-loading");
+      trackerBtnEl.textContent = trackerBtnLabel;
     }
   });
 
