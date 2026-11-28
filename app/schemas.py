@@ -399,9 +399,11 @@ class ScannerSettingsOut(BaseModel):
     mexc_max_concurrency: int
     auto_scan_enabled: bool
     scan_mode: Literal["AUTO", "MANUAL"]
-    pair_selection_mode: Literal["TOP_N", "CUSTOM"] = "TOP_N"
+    pair_selection_mode: Literal["TOP_N", "CUSTOM", "AUTO"] = "TOP_N"
     selected_pairs: list[str] = []
     top_n_pairs: int
+    auto_pair_min_volume: float = 2_000_000.0
+    auto_use_ai_ranking: bool = True
     scan_interval_minutes: int
     tracker_interval_seconds: int
     active_strategies: list[str]
@@ -423,8 +425,10 @@ class ScannerSettingsUpdate(BaseModel):
     mexc_proxy_url: Optional[str] = Field(default=None, max_length=300)
     mexc_max_concurrency: Optional[int] = Field(default=None, ge=1, le=20)
     auto_scan_enabled: Optional[bool] = None
-    pair_selection_mode: Optional[Literal["TOP_N", "CUSTOM"]] = None
+    pair_selection_mode: Optional[Literal["TOP_N", "CUSTOM", "AUTO"]] = None
     selected_pairs: Optional[list[str]] = None
+    auto_pair_min_volume: Optional[float] = Field(default=None, ge=0.0)
+    auto_use_ai_ranking: Optional[bool] = None
     top_n_pairs: Optional[int] = Field(default=None, ge=1, le=100)
     scan_interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     tracker_interval_seconds: Optional[int] = Field(default=None, ge=15, le=3600)

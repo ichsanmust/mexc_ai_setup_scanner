@@ -300,6 +300,18 @@ def seed_all(db: Session) -> None:
     )
     _upsert_default_setting(
         db,
+        "auto_pair_min_volume",
+        str(settings.auto_pair_min_volume),
+        "Batas minimal likuiditas 24 jam (USDT) untuk mode Auto Opportunity",
+    )
+    _upsert_default_setting(
+        db,
+        "auto_use_ai_ranking",
+        "true" if settings.auto_use_ai_ranking else "false",
+        "Gunakan AI untuk memilih pair final di mode Auto Opportunity",
+    )
+    _upsert_default_setting(
+        db,
         "min_atr_pct",
         str(settings.min_atr_pct),
         "Pre-filter minimal ATR% LTF (skip market mati)",

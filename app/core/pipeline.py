@@ -17,6 +17,7 @@ from ..ai.analyzer import (
     ANALYZER_PROMPT_VERSION,
     analyze_market_snapshot,
     load_strategy_prompts_map,
+    rank_pairs_with_ai,
     resolve_active_llm_config,
 )
 from ..config import settings
@@ -24,7 +25,11 @@ from ..database import SessionLocal
 from ..models import ScanEvaluation, ScanRun, Strategy, TradeSetup, utcnow
 from ..scanner.features import prefilter_and_build_snapshot, prescreen_for_strategy, summarize_timeframe
 from ..scanner.mexc_public import INTERVAL_SECONDS_MAP, MexcPublicClient
-from .market_mover import analyze_btc_market_mover, build_btc_strategy_advisor
+from .market_mover import (
+    analyze_btc_market_mover,
+    build_btc_strategy_advisor,
+    load_btc_context_for_ranking,
+)
 from .runtime_settings import resolve_runtime_settings
 from .validator import validate_and_guard_setup
 
@@ -162,6 +167,7 @@ class ScanPipeline:
                 "tracker_interval_seconds": rt_cfg["tracker_interval_seconds"],
                 "min_24h_quote_volume": rt_cfg["min_24h_quote_volume"],
                 "max_24h_quote_volume": rt_cfg["max_24h_quote_volume"],
+                "auto_pair_min_volume": rt_cfg["auto_pair_min_volume"],
                 "min_atr_pct": rt_cfg["min_atr_pct"],
                 "max_atr_pct": rt_cfg["max_atr_pct"],
                 "min_confidence": rt_cfg["min_confidence"],
@@ -330,6 +336,64 @@ class ScanPipeline:
                         "Semua pair custom tidak valid atau tidak aktif di MEXC: "
                         + ", ".join(i["symbol"] for i in invalid_custom)
                     )
+            elif rt_cfg.get("pair_selection_mode") == "AUTO":
+                btc_context_for_ranking = load_btc_context_for_ranking(db)
+                pool_size = max(top_n * 3, top_n) if rt_cfg["auto_use_ai_ranking"] else top_n
+                total_contracts, candidate_pairs = await mexc.get_auto_pairs(
+                    top_n=pool_size,
+                    min_quote_volume=rt_cfg["auto_pair_min_volume"],
+                )
+                if not candidate_pairs:
+                    raise ValueError(
+                        "Mode Auto Opportunity tidak menemukan pair yang memenuhi kriteria saat ini."
+                    )
+                auto_record: dict[str, Any] = {
+                    "ai_ranking_used": False,
+                    "ai_ranking_error": None,
+                    "btc_context": btc_context_for_ranking,
+                    "candidates": [
+                        {"symbol": p["symbol"], "score": p["auto_score"], "reasons": p["auto_reasons"]}
+                        for p in candidate_pairs
+                    ],
+                }
+                top_pairs = candidate_pairs[:top_n]
+                if rt_cfg["auto_use_ai_ranking"] and len(candidate_pairs) > top_n:
+                    try:
+                        picks, _raw = await rank_pairs_with_ai(
+                            candidate_pairs,
+                            pick_n=top_n,
+                            llm_config=llm_cfg,
+                            btc_context=btc_context_for_ranking,
+                            timeout_seconds=rt_cfg["llm_timeout_seconds"],
+                            max_tokens=rt_cfg["llm_max_tokens"],
+                        )
+                        by_sym = {p["symbol"]: p for p in candidate_pairs}
+                        ranked = []
+                        for pick in picks:
+                            item = dict(by_sym[pick["symbol"]])
+                            item["ai_reason"] = pick["reason"]
+                            ranked.append(item)
+                        top_pairs = ranked
+                        auto_record["ai_ranking_used"] = True
+                    except Exception as exc:
+                        log.warning("AI pair ranking failed on scan #%s, using rule score: %s", scan_run.id, exc)
+                        auto_record["ai_ranking_error"] = str(exc)[:300]
+                        warnings.append("Ranking AI gagal; memakai skor rumus untuk memilih pair.")
+                auto_preview = ", ".join(f"{p['symbol']}({p['auto_score']:.0f})" for p in top_pairs[:10])
+                log.info("Auto pairs scan #%s: %s", scan_run.id, auto_preview)
+                auto_record["selected"] = [
+                    {
+                        "symbol": p["symbol"],
+                        "score": p["auto_score"],
+                        "reasons": p["auto_reasons"],
+                        "ai_reason": p.get("ai_reason"),
+                    }
+                    for p in top_pairs
+                ]
+                scan_run.settings_snapshot = {
+                    **(scan_run.settings_snapshot or {}),
+                    "auto_selection": auto_record,
+                }
             else:
                 get_top_kwargs: dict[str, Any] = {
                     "top_n": top_n,

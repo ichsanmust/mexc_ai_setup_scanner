@@ -197,6 +197,44 @@ def _evaluate_style(
     }
 
 
+def build_btc_context_for_ranking(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Compact BTC regime summary for AI pair ranking, from a persisted market mover report."""
+    if not isinstance(report, dict):
+        return None
+    btc = report.get("btc") or {}
+    if not btc or not btc.get("overall_regime"):
+        return None
+    advisor = report.get("advisor") or {}
+    suggested = advisor.get("suggested_settings") or {}
+    styles = btc.get("styles") or {}
+    return {
+        "scanned_at": btc.get("scanned_at"),
+        "last_price": btc.get("last_price"),
+        "change_24h_pct": btc.get("change_24h_pct"),
+        "overall_regime": btc.get("overall_regime"),
+        "overall_bias": btc.get("overall_bias"),
+        "volatility_state": btc.get("volatility_state"),
+        "funding_extreme": btc.get("funding_extreme"),
+        "styles": {
+            key: {"regime": (v or {}).get("regime"), "bias": (v or {}).get("bias")}
+            for key, v in styles.items()
+        },
+        "suggested_styles": suggested.get("recommended_styles"),
+    }
+
+
+def load_btc_context_for_ranking(db: Session) -> dict[str, Any] | None:
+    """Load the latest persisted BTC market mover scan (no network call) for AI pair ranking."""
+    row = db.query(AppSetting).filter(AppSetting.key == LATEST_BTC_MOVER_KEY).first()
+    if not row or not row.value:
+        return None
+    try:
+        report = json.loads(row.value)
+    except (ValueError, TypeError):
+        return None
+    return build_btc_context_for_ranking(report)
+
+
 def analyze_btc_market_mover(
     candles_by_iv: dict[str, list[dict[str, Any]]],
     ticker: dict[str, Any] | None = None,

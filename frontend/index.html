@@ -685,6 +685,10 @@
                     <span><strong>Top N by Volume</strong> <small>Otomatis filter Min/Max 24h Vol</small></span>
                   </label>
                   <label class="radio-card">
+                    <input type="radio" name="pair_selection_mode" value="AUTO" />
+                    <span><strong>Auto Opportunity</strong> <small>Pair dipilih otomatis berdasarkan skor peluang</small></span>
+                  </label>
+                  <label class="radio-card">
                     <input type="radio" name="pair_selection_mode" value="CUSTOM" />
                     <span><strong>Pilih Pair Manual</strong> <small>Scan hanya pair terpilih</small></span>
                   </label>
@@ -697,6 +701,20 @@
                 </label>
                 <input id="cfg-top-n-pairs" type="number" min="1" max="100" value="30" />
                 <p class="subtitle-sm" style="margin: 2px 0 0;">HTF/LTF, Kline Limit, dan Expiry selalu mengikuti pengaturan masing-masing strategi di tabel <strong>Kelola Strategi</strong> di bawah.</p>
+              </div>
+              <div id="cfg-auto-pairs-wrapper" class="settings-field hidden">
+                <label for="cfg-auto-min-vol">
+                  Batas Minimal Likuiditas 24h (USDT)
+                  <button type="button" class="info-btn" data-info-title="Auto Opportunity" data-info="Setiap scan, semua pair MEXC Futures diberi skor peluang 0-100 dari likuiditas, range volatilitas 24h, momentum, posisi harga di range, dan funding rate. Top N pair berskor tertinggi dipilih.">i</button>
+                </label>
+                <input id="cfg-auto-min-vol" type="text" inputmode="numeric" value="2,000,000" />
+                <small id="cfg-auto-min-vol-hint" class="num-hint">$2 Juta USDT</small>
+                <div style="margin-top: 10px;">
+                  <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input id="cfg-auto-use-ai" type="checkbox" checked />
+                    <span><strong>Gunakan AI untuk Ranking & Seleksi Pair</strong> <small class="subtitle-sm" style="display: block;">Mengirim pool kandidat berskor rumus ke LLM untuk memilih Top N pair terbaik berdasarkan konteks market.</small></span>
+                  </label>
+                </div>
               </div>
               <div id="cfg-custom-pairs-wrapper" class="settings-field hidden">
                 <div class="pair-picker-header">

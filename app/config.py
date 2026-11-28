@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     # Pre-Filter & Risk Guard
     min_24h_quote_volume: float = 5_000_000.0
     max_24h_quote_volume: float = 0.0
+    auto_pair_min_volume: float = 2_000_000.0  # liquidity floor for AUTO (opportunity) pair mode
+    auto_use_ai_ranking: bool = True  # use AI to pick final top_n among rule-scored candidates
     min_atr_pct: float = 0.25
     max_atr_pct: float = 8.0
     min_confidence: int = 75

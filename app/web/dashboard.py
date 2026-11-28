@@ -534,6 +534,10 @@ def update_scanner_settings(body: ScannerSettingsUpdate, db: Session = Depends(g
             _upsert_setting(db, "pair_selection_mode", eff_mode)
         if body.selected_pairs is not None:
             _upsert_setting(db, "selected_pairs", ",".join(eff_pairs))
+    if body.auto_use_ai_ranking is not None:
+        _upsert_setting(db, "auto_use_ai_ranking", "true" if body.auto_use_ai_ranking else "false")
+    if body.auto_pair_min_volume is not None:
+        _upsert_setting(db, "auto_pair_min_volume", str(body.auto_pair_min_volume))
     if body.top_n_pairs is not None:
         _upsert_setting(db, "top_n_pairs", str(body.top_n_pairs))
     if body.scan_interval_minutes is not None:

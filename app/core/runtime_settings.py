@@ -27,7 +27,11 @@ RUNTIME_SETTING_KEYS = [
     "max_atr_pct",
     "min_confidence",
     "risk_profile",
+    "auto_pair_min_volume",
+    "auto_use_ai_ranking",
 ]
+
+PAIR_SELECTION_MODES = {"TOP_N", "CUSTOM", "AUTO"}
 
 
 def _parse_int(raw: Optional[str], default: int, min_val: int, max_val: int) -> int:
@@ -70,10 +74,10 @@ def _parse_risk_profile(raw: Optional[str], default: str = "CONSERVATIVE") -> st
 
 def _parse_pair_selection_mode(raw: Optional[str], default: str = "TOP_N") -> str:
     val = str(raw or "").strip().upper()
-    if val in {"TOP_N", "CUSTOM"}:
+    if val in PAIR_SELECTION_MODES:
         return val
     d = str(default or "TOP_N").strip().upper()
-    return d if d in {"TOP_N", "CUSTOM"} else "TOP_N"
+    return d if d in PAIR_SELECTION_MODES else "TOP_N"
 
 
 def parse_selected_pairs(raw: Optional[str | list[str]]) -> list[str]:
@@ -141,6 +145,10 @@ def resolve_runtime_settings(db: Optional[Session] = None) -> dict[str, Any]:
         "max_24h_quote_volume": _parse_float(
             rows.get("max_24h_quote_volume"), settings.max_24h_quote_volume, 0.0, 1e13
         ),
+        "auto_pair_min_volume": _parse_float(
+            rows.get("auto_pair_min_volume"), settings.auto_pair_min_volume, 0.0, 1e13
+        ),
+        "auto_use_ai_ranking": _parse_bool(rows.get("auto_use_ai_ranking"), settings.auto_use_ai_ranking),
         "min_atr_pct": _parse_float(rows.get("min_atr_pct"), settings.min_atr_pct, 0.0, 50.0),
         "max_atr_pct": _parse_float(rows.get("max_atr_pct"), settings.max_atr_pct, 0.1, 100.0),
         "min_confidence": _parse_int(rows.get("min_confidence"), settings.min_confidence, 0, 100),

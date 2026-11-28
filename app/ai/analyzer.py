@@ -1,5 +1,6 @@
 """AI decision engine with MySQL-backed provider/model resolution and strict Pydantic parsing."""
 
+import asyncio
 import json
 import logging
 import re
@@ -514,6 +515,134 @@ async def analyze_market_snapshot(
     finally:
         if own_client:
             await client.aclose()
+
+
+PAIR_RANKER_SYSTEM_PROMPT = (
+    "Kamu adalah analis crypto futures yang memilih pair paling layak dipindai untuk setup trading "
+    "intraday (LONG/SHORT) dari daftar kandidat MEXC Futures. Prioritaskan pair dengan peluang setup "
+    "jelas: likuiditas memadai, volatilitas sehat, momentum/struktur berarah, dan funding yang "
+    "mengindikasikan potensi squeeze/reversal. Hindari pair yang tampak sudah pump/dump ekstrem tanpa "
+    "pola, terlalu sempit range-nya, atau bergerak acak. Jawab HANYA JSON valid."
+)
+
+
+def _compact_candidate(c: dict[str, Any]) -> dict[str, Any]:
+    t = c.get("ticker") or {}
+    last = float(t.get("lastPrice") or 0.0)
+    high = float(t.get("high24Price") or 0.0)
+    low = float(t.get("lower24Price") or 0.0)
+    span = high - low
+    return {
+        "symbol": c["symbol"],
+        "rule_score": c.get("auto_score"),
+        "price": last,
+        "change_24h_pct": round(float(t.get("riseFallRate") or 0.0) * 100.0, 2),
+        "range_24h_pct": round(span / last * 100.0, 2) if last > 0 else None,
+        "pos_in_range_pct": round((last - low) / span * 100.0, 1) if span > 0 else None,
+        "funding_rate_pct": round(float(t.get("fundingRate") or 0.0) * 100.0, 4),
+        "volume_24h_usdt_m": round(float(t.get("amount24") or 0.0) / 1e6, 1),
+    }
+
+
+async def rank_pairs_with_ai(
+    candidates: list[dict[str, Any]],
+    pick_n: int,
+    llm_config: dict[str, str],
+    btc_context: Optional[dict[str, Any]] = None,
+    client: Optional[httpx.AsyncClient] = None,
+    timeout_seconds: Optional[int] = None,
+    max_tokens: Optional[int] = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Ask the LLM to pick the best `pick_n` pairs among rule-scored candidates.
+
+    Returns ([{"symbol", "reason"}, ...] in ranked order, raw_response). Only symbols present in
+    `candidates` are kept (hallucinated symbols are dropped). Raises RuntimeError on config/API/parse
+    failure so callers can fall back to rule-based ranking.
+    """
+    api_key = llm_config.get("api_key", "").strip()
+    base_url = llm_config.get("base_url", "").strip()
+    model_id = llm_config.get("model_id", "").strip()
+    provider = llm_config.get("provider", "commandcode").strip()
+    if not api_key:
+        raise RuntimeError(f"API Key untuk provider '{provider}' belum diisi.")
+    if not base_url:
+        raise RuntimeError(f"Base URL untuk provider '{provider}' belum diisi.")
+    if not candidates:
+        return [], {}
+
+    allowed = {c["symbol"] for c in candidates}
+    pick_n = max(1, min(int(pick_n), len(candidates)))
+    if btc_context:
+        btc_section = (
+            f"Konteks BTC_USDT (hasil scan Market Mover terakhir, cek 'scanned_at' untuk umurnya): "
+            f"{json.dumps(btc_context, ensure_ascii=False)}\n"
+            f"Gunakan konteks BTC: saat BTC TRENDING utamakan altcoin yang bergerak searah bias BTC; "
+            f"saat RANGING utamakan pair dengan range jelas untuk mean reversion/scalp; saat volatilitas "
+            f"tinggi atau funding ekstrem utamakan pair paling likuid dan hindari yang sudah pump/dump ekstrem.\n"
+        )
+    else:
+        btc_section = "Konteks BTC_USDT tidak tersedia; nilai kandidat murni dari datanya sendiri.\n"
+    user_message = (
+        f"Pilih maksimal {pick_n} pair terbaik (urut dari paling menjanjikan) dari kandidat berikut.\n"
+        f"'rule_score' adalah skor peluang berbasis rumus (0-100) sebagai referensi, bukan keharusan.\n"
+        f"{btc_section}"
+        f"Kembalikan HANYA JSON: "
+        f'{{"picks":[{{"symbol":"<SYMBOL dari kandidat>","reason":"<alasan singkat maks 140 karakter>"}}]}}\n\n'
+        f"KANDIDAT:\n{json.dumps([_compact_candidate(c) for c in candidates], ensure_ascii=False)}"
+    )
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "temperature": 0.2,
+        "max_tokens": max(1024, min(8192, int(max_tokens if max_tokens is not None else settings.llm_max_tokens))),
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": PAIR_RANKER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+    }
+    headers = _build_headers(provider, api_key)
+
+    own_client = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds or settings.llm_timeout_seconds))
+        own_client = True
+    try:
+        resp = await client.post(base_url, headers=headers, json={**payload, "response_format": {"type": "json_object"}})
+        if resp.status_code in (400, 422):
+            resp = await client.post(base_url, headers=headers, json=payload)
+        if resp.is_error:
+            raise RuntimeError(f"HTTP {resp.status_code} ({model_id}): {resp.text[:300]}")
+        raw = resp.json()
+        content, reasoning, _ = _extract_choice_fields(raw)
+        text = content or reasoning
+        if not text:
+            raise RuntimeError(f"Model '{model_id}' mengembalikan content kosong untuk ranking pair.")
+        try:
+            parsed = json.loads(_extract_json_content(text))
+        except ValueError as exc:
+            raise RuntimeError(f"Ranking pair AI bukan JSON valid: {exc}") from exc
+    finally:
+        if own_client:
+            await client.aclose()
+
+    raw_picks = parsed.get("picks") if isinstance(parsed, dict) else parsed
+    if not isinstance(raw_picks, list):
+        raise RuntimeError("Ranking pair AI tidak memuat daftar 'picks'.")
+
+    picks: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_picks:
+        sym = str(item.get("symbol") if isinstance(item, dict) else item or "").strip().upper()
+        if sym not in allowed or sym in seen:
+            continue
+        seen.add(sym)
+        reason = str(item.get("reason") or "").strip()[:200] if isinstance(item, dict) else ""
+        picks.append({"symbol": sym, "reason": reason})
+        if len(picks) >= pick_n:
+            break
+    if not picks:
+        raise RuntimeError("Ranking pair AI tidak menghasilkan simbol valid dari kandidat.")
+    return picks, raw
 
 
 async def test_llm_connection(

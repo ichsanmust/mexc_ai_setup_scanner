@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import random
 import time
 from typing import Any, Optional
@@ -22,6 +23,85 @@ INTERVAL_SECONDS_MAP: dict[str, int] = {
     "Hour8": 28800,
     "Day1": 86400,
 }
+
+
+AUTO_DEFAULT_MIN_QUOTE_VOLUME = 2_000_000.0
+AUTO_MIN_RANGE_PCT = 1.5  # skip pairs with a dead 24h range
+AUTO_MAX_SPREAD_PCT = 0.3  # skip pairs with a wide bid/ask spread
+
+
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+
+def score_auto_candidate(ticker: dict[str, Any], min_quote_volume: float) -> tuple[float, list[str]] | None:
+    """Score a ticker 0-100 for trading opportunity; return None if it fails hard filters.
+
+    Components (weights): liquidity 25, 24h range volatility 30, momentum 20,
+    range-position (near extremes = breakout/reversal zone) 15, funding extremity 10.
+    Wide spread and extreme (>40%) ranges are penalized.
+    """
+    try:
+        last = float(ticker.get("lastPrice") or 0.0)
+        amount = float(ticker.get("amount24") or 0.0)
+        high = float(ticker.get("high24Price") or 0.0)
+        low = float(ticker.get("lower24Price") or 0.0)
+        change_pct = abs(float(ticker.get("riseFallRate") or 0.0)) * 100.0
+        funding = abs(float(ticker.get("fundingRate") or 0.0))
+        bid = float(ticker.get("bid1") or 0.0)
+        ask = float(ticker.get("ask1") or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+    if last <= 0 or amount < max(min_quote_volume, 0.0) or high <= 0 or low <= 0 or high < low:
+        return None
+
+    range_pct = (high - low) / last * 100.0
+    if range_pct < AUTO_MIN_RANGE_PCT:
+        return None
+
+    spread_pct = 0.0
+    if bid > 0 and ask > 0 and ask >= bid:
+        spread_pct = (ask - bid) / last * 100.0
+        if spread_pct > AUTO_MAX_SPREAD_PCT:
+            return None
+
+    # Liquidity: log-scaled between min volume and $500M
+    lo_v = math.log10(max(min_quote_volume, 1_000_000.0))
+    hi_v = math.log10(500_000_000.0)
+    liquidity = _clip01((math.log10(max(amount, 1.0)) - lo_v) / (hi_v - lo_v))
+
+    # Volatility: 10% range is full score; over 40% is penalized (likely pump/dump)
+    volatility = _clip01(range_pct / 10.0)
+    if range_pct > 40.0:
+        volatility *= _clip01(1.0 - (range_pct - 40.0) / 40.0)
+
+    momentum = _clip01(change_pct / 6.0)
+
+    span = high - low
+    pos = _clip01((last - low) / span) if span > 0 else 0.5
+    extremity = max(pos, 1.0 - pos)  # 0.5 (mid) .. 1.0 (at high/low)
+    range_position = _clip01((extremity - 0.5) / 0.5)
+
+    funding_score = _clip01(funding / 0.0005)
+
+    score = (
+        liquidity * 25.0
+        + volatility * 30.0
+        + momentum * 20.0
+        + range_position * 15.0
+        + funding_score * 10.0
+    )
+    score *= 1.0 - min(spread_pct / AUTO_MAX_SPREAD_PCT, 1.0) * 0.2
+
+    reasons = [
+        f"range24 {range_pct:.1f}%",
+        f"chg24 {change_pct:.1f}%",
+        f"pos {pos * 100:.0f}%",
+    ]
+    if funding_score >= 0.5:
+        reasons.append(f"funding {funding * 100:.3f}%")
+    return round(score, 2), reasons
 
 
 class MexcPublicClient:
@@ -187,6 +267,48 @@ class MexcPublicClient:
 
         merged.sort(key=lambda x: x["amount24"], reverse=True)
         return len(contracts), merged[:limit_n]
+
+    async def get_auto_pairs(
+        self,
+        top_n: int | None = None,
+        min_quote_volume: float | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Return (total_active_contracts, top_n_pairs_ranked_by_opportunity_score).
+
+        Uses only ticker data already fetched (no extra requests): liquidity, 24h range
+        volatility, momentum, range position, funding extremity, minus a spread penalty.
+        """
+        limit_n = top_n or settings.top_n_pairs
+        min_vol = min_quote_volume if min_quote_volume is not None else AUTO_DEFAULT_MIN_QUOTE_VOLUME
+
+        contracts, tickers = await asyncio.gather(
+            self.get_active_usdt_contracts(),
+            self.get_all_tickers(),
+        )
+
+        scored: list[dict[str, Any]] = []
+        for contract in contracts:
+            sym = contract.get("symbol")
+            if not sym or sym not in tickers:
+                continue
+            ticker = tickers[sym]
+            result = score_auto_candidate(ticker, min_vol)
+            if result is None:
+                continue
+            score, reasons = result
+            scored.append(
+                {
+                    "symbol": sym,
+                    "contract": contract,
+                    "ticker": ticker,
+                    "amount24": float(ticker.get("amount24") or 0.0),
+                    "auto_score": score,
+                    "auto_reasons": reasons,
+                }
+            )
+
+        scored.sort(key=lambda x: x["auto_score"], reverse=True)
+        return len(contracts), scored[:limit_n]
 
     async def get_selected_pairs(
         self, symbols: list[str]

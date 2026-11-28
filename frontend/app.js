@@ -675,7 +675,18 @@ function buildScanSettingsHtml(cfg, fallbackStrategy) {
           <span class="eval-setting-value">Custom (${customPairs.length} pair)</span>
           <span class="eval-setting-sub"><code>${escapeHtml(customPairs.slice(0, 8).join(", ") || "-")}${customPairs.length > 8 ? ` +${customPairs.length - 8}` : ""}</code></span>
         </div>`
-    : `<div class="eval-setting-item">
+    : pairMode === "AUTO"
+      ? (() => {
+          const autoData = cfg.auto_selection || {};
+          const autoPairs = Array.isArray(autoData.selected) ? autoData.selected : (Array.isArray(cfg.auto_selected_pairs) ? cfg.auto_selected_pairs : []);
+          const preview = autoPairs.slice(0, 8).map((p) => `${p.symbol} (${Math.round(p.score)})`).join(", ");
+          return `<div class="eval-setting-item">
+          <span class="eval-setting-label">Pemilihan Pair</span>
+          <span class="eval-setting-value">Auto Opportunity (${autoPairs.length || cfg.top_n_pairs || "-"} pair &bull; AI: ${autoData.ai_ranking_used ? "Aktif" : "Nonaktif"})</span>
+          <span class="eval-setting-sub"><code>${escapeHtml(preview || "-")}${autoPairs.length > 8 ? ` +${autoPairs.length - 8}` : ""}</code></span>
+        </div>`;
+        })()
+      : `<div class="eval-setting-item">
           <span class="eval-setting-label">Pemilihan Pair</span>
           <span class="eval-setting-value">Top ${cfg.top_n_pairs ?? "-"} pair</span>
         </div>`;
@@ -3411,6 +3422,9 @@ async function loadAIModalData(syncFilterToActiveProvider = false) {
   document.getElementById("cfg-llm-max-tokens").value = scannerCfg.llm_max_tokens ?? 1500;
   setGroupedNumberValue("cfg-min-vol", "cfg-min-vol-hint", scannerCfg.min_24h_quote_volume, false);
   setGroupedNumberValue("cfg-max-vol", "cfg-max-vol-hint", scannerCfg.max_24h_quote_volume, true);
+  const autoUseAiEl = document.getElementById("cfg-auto-use-ai");
+  if (autoUseAiEl) autoUseAiEl.checked = scannerCfg.auto_use_ai_ranking !== false;
+  setGroupedNumberValue("cfg-auto-min-vol", "cfg-auto-min-vol-hint", scannerCfg.auto_pair_min_volume ?? 2000000, false);
   document.getElementById("cfg-min-confidence").value = scannerCfg.min_confidence;
   const riskSel = document.getElementById("cfg-risk-profile");
   if (riskSel) {
@@ -3643,9 +3657,11 @@ function getSelectedPairMode() {
 }
 
 function syncPairSelectionModeUI() {
-  const isCustom = getSelectedPairMode() === "CUSTOM";
+  const mode = getSelectedPairMode();
+  const isCustom = mode === "CUSTOM";
   document.getElementById("cfg-top-n-wrapper")?.classList.toggle("hidden", isCustom);
   document.getElementById("cfg-custom-pairs-wrapper")?.classList.toggle("hidden", !isCustom);
+  document.getElementById("cfg-auto-pairs-wrapper")?.classList.toggle("hidden", mode !== "AUTO");
   if (isCustom) {
     ensureMexcPairsCatalog();
   }
@@ -3879,6 +3895,8 @@ async function saveScannerSettings() {
     pair_selection_mode: pairSelectionMode,
     selected_pairs: state.selectedPairs,
     top_n_pairs: parseNumField("cfg-top-n-pairs"),
+    auto_pair_min_volume: parseGroupedInt(document.getElementById("cfg-auto-min-vol")?.value, 2000000),
+    auto_use_ai_ranking: document.getElementById("cfg-auto-use-ai")?.checked ?? true,
     active_strategies: activeStrategies,
     mexc_base_url: document.getElementById("cfg-mexc-base-url").value.trim(),
     mexc_proxy_url: document.getElementById("cfg-mexc-proxy-url").value.trim(),
@@ -3902,7 +3920,9 @@ async function saveScannerSettings() {
     state.scannerSettings = saved;
     const pairInfo = saved.pair_selection_mode === "CUSTOM"
       ? `${(saved.selected_pairs || []).length} Custom Pairs`
-      : `Top ${saved.top_n_pairs}`;
+      : saved.pair_selection_mode === "AUTO"
+        ? `Auto Opportunity (${saved.top_n_pairs} pair)`
+        : `Top ${saved.top_n_pairs}`;
     showToast(`Tersimpan: ${saved.scan_mode} • ${pairInfo} • ${saved.mexc_base_url}`);
     await Promise.all([loadStrategies(), loadAIModalData(false), loadHealthAndStatus(), loadAnalytics(), loadBtcMarketMover()]);
   } catch (err) {
@@ -4150,6 +4170,7 @@ function wireEvents() {
   });
   bindGroupedNumberInput("cfg-min-vol", "cfg-min-vol-hint", false);
   bindGroupedNumberInput("cfg-max-vol", "cfg-max-vol-hint", true);
+  bindGroupedNumberInput("cfg-auto-min-vol", "cfg-auto-min-vol-hint", false);
 
   async function copyTextWithFeedback(text, btn = null) {
     try {
@@ -4675,7 +4696,9 @@ function wireEvents() {
       pairModeEl.innerHTML =
         pairMode === "CUSTOM"
           ? `<span class="badge badge-open">Custom Pairs (Pilih Manual)</span>`
-          : `<span class="badge badge-neutral">Top N by Volume</span>`;
+          : pairMode === "AUTO"
+            ? `<span class="badge badge-open">Auto Opportunity</span>`
+            : `<span class="badge badge-neutral">Top N by Volume</span>`;
     }
     if (pairsDetailEl) {
       if (pairMode === "CUSTOM") {
@@ -4688,6 +4711,9 @@ function wireEvents() {
         } else {
           pairsDetailEl.innerHTML = `<span class="badge badge-hit-sl">Belum ada pair dipilih di Settings</span>`;
         }
+      } else if (pairMode === "AUTO") {
+        const autoMin = `$${Number(scannerCfg.auto_pair_min_volume || 0).toLocaleString("en-US")}`;
+        pairsDetailEl.innerHTML = `<span class="badge badge-neutral">Top ${scannerCfg.top_n_pairs ?? "-"} skor peluang</span> <span class="subtitle-sm">Min likuiditas 24h: ${autoMin}</span>`;
       } else {
         const minVolStr = `$${Number(scannerCfg.min_24h_quote_volume || 0).toLocaleString("en-US")}`;
         const maxVolStr = Number(scannerCfg.max_24h_quote_volume || 0) > 0

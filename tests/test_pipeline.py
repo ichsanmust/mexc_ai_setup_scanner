@@ -460,3 +460,116 @@ async def test_pipeline_custom_mode_fails_when_all_pairs_invalid(db_session, mon
     summary = await ScanPipeline().run_once(strategies=["TREND_PULLBACK"])
     assert summary["status"] == "FAILED"
     assert "DEAD_USDT" in summary["error"]
+
+
+async def _run_auto_scan(db_session, monkeypatch, ai_ranker, use_ai: bool):
+    db, TestingSessionLocal, _ = db_session
+    key_row = db.query(AppSetting).filter(AppSetting.key == "commandcode_api_key").first()
+    key_row.value = "test-cmd-key"
+    for k, v in [
+        ("pair_selection_mode", "AUTO"),
+        ("top_n_pairs", "1"),
+        ("auto_use_ai_ranking", "true" if use_ai else "false"),
+    ]:
+        row = db.query(AppSetting).filter(AppSetting.key == k).first()
+        if row:
+            row.value = v
+        else:
+            db.add(AppSetting(key=k, value=v))
+    db.commit()
+
+    from app.core import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "SessionLocal", TestingSessionLocal)
+
+    def _tk(sym, price, hi, lo, chg):
+        return {
+            "symbol": sym, "lastPrice": price, "amount24": 50_000_000, "fundingRate": 0.0001,
+            "holdVol": 1000, "high24Price": hi, "lower24Price": lo, "riseFallRate": chg,
+            "bid1": price * 0.9999, "ask1": price * 1.0001,
+        }
+
+    async def fake_contracts(self):
+        return [
+            {"symbol": "CALM_USDT", "quoteCoin": "USDT", "state": 0},
+            {"symbol": "HOT_USDT", "quoteCoin": "USDT", "state": 0},
+        ]
+
+    async def fake_tickers(self):
+        return {
+            "CALM_USDT": _tk("CALM_USDT", 100.0, 102.0, 99.0, 0.002),
+            "HOT_USDT": _tk("HOT_USDT", 114.0, 115.0, 92.0, 0.09),
+        }
+
+    async def fake_get_kline(self, symbol, interval="Min15", limit=250, start_ts=None, end_ts=None):
+        return _make_sample_candles(80)
+
+    analyzed_symbols: list[str] = []
+
+    async def fake_analyze(snapshot, strategy, llm_config, client=None, timeout_seconds=None, **kwargs):
+        analyzed_symbols.append(snapshot["symbol"])
+        return (
+            AISetupDecision(
+                symbol=snapshot["symbol"], strategy_used=strategy, decision="NO_TRADE",
+                market_regime="RANGING", entry_type="NONE", confidence=40,
+                invalidation_reason="N/A", rationale="Auto pair test",
+            ),
+            {"mock": True},
+        )
+
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_active_usdt_contracts", fake_contracts)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_all_tickers", fake_tickers)
+    monkeypatch.setattr(pipeline_mod.MexcPublicClient, "get_kline", fake_get_kline)
+    monkeypatch.setattr(pipeline_mod, "analyze_market_snapshot", fake_analyze)
+    monkeypatch.setattr(pipeline_mod, "rank_pairs_with_ai", ai_ranker)
+
+    pipe = ScanPipeline()
+    summary = await pipe.run_once(strategies=["TREND_PULLBACK"])
+    assert summary["status"] == "COMPLETED"
+
+    verify_db = TestingSessionLocal()
+    try:
+        latest_run = verify_db.query(ScanRun).order_by(ScanRun.id.desc()).first()
+        snapshot = latest_run.settings_snapshot
+    finally:
+        verify_db.close()
+    return analyzed_symbols, snapshot
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_pair_mode_rule_score_only(db_session, monkeypatch):
+    async def must_not_call(*a, **k):
+        raise AssertionError("AI ranking must not be called when disabled")
+
+    analyzed, snap = await _run_auto_scan(db_session, monkeypatch, must_not_call, use_ai=False)
+    assert set(analyzed) == {"HOT_USDT"}
+    assert snap["pair_selection_mode"] == "AUTO"
+    auto = snap["auto_selection"]
+    assert auto["ai_ranking_used"] is False
+    assert [p["symbol"] for p in auto["selected"]] == ["HOT_USDT"]
+    assert auto["selected"][0]["score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_pair_mode_ai_ranking_overrides_rule_order(db_session, monkeypatch):
+    async def fake_rank(candidates, pick_n, llm_config, **kwargs):
+        assert {c["symbol"] for c in candidates} == {"HOT_USDT", "CALM_USDT"}
+        return [{"symbol": "CALM_USDT", "reason": "setup bersih"}], {}
+
+    analyzed, snap = await _run_auto_scan(db_session, monkeypatch, fake_rank, use_ai=True)
+    assert set(analyzed) == {"CALM_USDT"}
+    auto = snap["auto_selection"]
+    assert auto["ai_ranking_used"] is True
+    assert auto["selected"][0]["ai_reason"] == "setup bersih"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_pair_mode_ai_failure_falls_back_to_rule_score(db_session, monkeypatch):
+    async def failing_rank(*a, **k):
+        raise RuntimeError("LLM down")
+
+    analyzed, snap = await _run_auto_scan(db_session, monkeypatch, failing_rank, use_ai=True)
+    assert set(analyzed) == {"HOT_USDT"}
+    auto = snap["auto_selection"]
+    assert auto["ai_ranking_used"] is False
+    assert "LLM down" in auto["ai_ranking_error"]
